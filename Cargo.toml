@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 axum = "0.8"
 jsonwebtoken = "9"
-lopdf = "0.45"
+lopdf = "0.46"
 pdf-inspector = { version = "1.25", features = ["ocr"] }
 regex = "1"
 sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "logs", "panic", "rustls", "tracing", "ureq"] }
