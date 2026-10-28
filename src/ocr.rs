@@ -11,6 +11,7 @@ use pdf_inspector::vision::{
     ModelDownloadPolicy, OcrMode, OcrOptions, OcrPdfOptions, PageContentSource, RenderOptions, process_pdf_with_ocr_mem,
 };
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::layout::{Line, Span};
 
@@ -28,7 +29,8 @@ pub struct OcrSettings {
     pub model_directory: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Whether OCR ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OcrStatus {
     /// No page needed OCR.
@@ -40,22 +42,28 @@ pub enum OcrStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// A page read by OCR.
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct OcrPage {
+    /// 1-indexed page number.
     pub number: u32,
     /// The page's text, reconstructed from OCR Markdown.
     #[serde(skip)]
     pub text: String,
     pub markdown: String,
+    /// The recognizer's mean confidence. It stays high even on poor scans and
+    /// is no quality gate.
     pub confidence: Option<f32>,
     /// Whether pdf-inspector suggests a stronger document parser for the page.
     pub weak: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// What OCR did for the pages without a usable text layer.
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct OcrReport {
     pub status: OcrStatus,
     pub pages: Vec<OcrPage>,
+    /// Why OCR failed; the native result is returned instead.
     pub error: Option<String>,
     pub render_ms: u64,
     pub ocr_ms: u64,

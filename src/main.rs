@@ -10,6 +10,12 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `docpipe openapi` prints the OpenAPI document and exits.
+    if std::env::args().nth(1).as_deref() == Some("openapi") {
+        println!("{}", docpipe::http::openapi().to_pretty_json()?);
+        return Ok(());
+    }
+
     // lopdf warns about every recoverable defect in a PDF and ONNX Runtime
     // logs every allocation; neither is ours to act on.
     tracing_subscriber::fmt()

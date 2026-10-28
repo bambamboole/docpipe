@@ -22,6 +22,8 @@ tower-http = { version = "0.6", features = ["limit", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ureq = "3"
+utoipa = "6"
+utoipa-axum = "0.3"
 
 [dev-dependencies]
 base64 = "0.22"
@@ -29,10 +31,6 @@ http-body-util = "0.1"
 rand = "0.8"
 rsa = "0.9"
 tower = { version = "0.5", features = ["util"] }
-
-# The tests generate their RSA keys; unoptimized, that takes seconds per key.
-[profile.dev.package.num-bigint-dig]
-opt-level = 3
 
 [profile.dev.package.rsa]
 opt-level = 3

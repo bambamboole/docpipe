@@ -8,12 +8,14 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::layout::{Line, Span};
 use crate::line_items::{self, LineItem};
 use crate::seller;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// What the document is, judged by its title and labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentKind {
     Invoice,
@@ -22,7 +24,9 @@ pub enum DocumentKind {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// A standard, partial (`Abschlagsrechnung`, `Teilrechnung`) or final
+/// (`Schlussrechnung`) invoice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InvoiceKind {
     Standard,
@@ -31,14 +35,19 @@ pub enum InvoiceKind {
 }
 
 /// A value and where it was read.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct Field {
+    /// The normalized value; dates as `YYYY-MM-DD`.
     pub value: String,
+    /// 1-indexed page number.
     pub page: u32,
+    /// The line the value was read from.
     pub line: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// The document's totals. Without a consistent triple, only labelled amounts
+/// are returned.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct Amounts {
     /// Decimal strings with a dot and two fraction digits, e.g. `3250.00`.
     pub net: Option<String>,
@@ -50,16 +59,23 @@ pub struct Amounts {
     pub consistent: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// Field candidates of a German invoice or quote, for a person to confirm. A
+/// field that cannot be read with confidence is `null`.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct Candidates {
     pub document_kind: DocumentKind,
+    /// Only for invoices.
     pub invoice_kind: Option<InvoiceKind>,
+    /// The invoice or quote number.
     pub number: Option<Field>,
     pub issue_date: Option<Field>,
     pub due_date: Option<Field>,
+    /// The end of a quote's validity.
     pub valid_until: Option<Field>,
     pub amounts: Amounts,
+    /// IBANs without spaces, checked with their ISO 13616 check digits.
     pub ibans: Vec<String>,
+    /// German and Austrian VAT IDs without spaces.
     pub vat_ids: Vec<String>,
     /// The issuing company, by its name with a legal form.
     pub seller_name: Option<Field>,

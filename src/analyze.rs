@@ -4,8 +4,9 @@ use std::time::Instant;
 
 use lopdf::Document;
 use pdf_inspector::types::ItemType;
-use pdf_inspector::{PdfType, detect_pdf_mem, extract_pages_markdown_mem, extract_text_with_positions_mem};
+use pdf_inspector::{detect_pdf_mem, extract_pages_markdown_mem, extract_text_with_positions_mem};
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::attachments::{self, EInvoice};
 use crate::candidates::{self, Candidates};
@@ -20,14 +21,41 @@ pub enum AnalyzeError {
     UnreadablePdf(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// The kind of document that was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
     Pdf,
     Xml,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// pdf-inspector's classification of a PDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PdfType {
+    /// Every page has a usable text layer.
+    TextBased,
+    /// Pages are scanned images without text.
+    Scanned,
+    /// Pages are mostly images.
+    ImageBased,
+    /// Some pages have text, others need OCR.
+    Mixed,
+}
+
+impl From<pdf_inspector::PdfType> for PdfType {
+    fn from(pdf_type: pdf_inspector::PdfType) -> Self {
+        match pdf_type {
+            pdf_inspector::PdfType::TextBased => Self::TextBased,
+            pdf_inspector::PdfType::Scanned => Self::Scanned,
+            pdf_inspector::PdfType::ImageBased => Self::ImageBased,
+            pdf_inspector::PdfType::Mixed => Self::Mixed,
+        }
+    }
+}
+
+/// Where the pages' text comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TextSource {
     /// The PDF's own text layer.
@@ -40,39 +68,48 @@ pub enum TextSource {
     None,
 }
 
-#[derive(Debug, Serialize)]
+/// One page of a PDF.
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Page {
     /// 1-indexed.
     pub number: u32,
     /// The page's lines, top to bottom.
     pub text: String,
+    /// The page as Markdown, with tables and headings.
     pub markdown: String,
+    /// Whether the page has no usable text layer.
     pub needs_ocr: bool,
     /// Whether `text` and `markdown` come from OCR.
     pub ocr: bool,
 }
 
-#[derive(Debug, Serialize)]
+/// A file embedded in the PDF.
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AttachmentInfo {
     pub filename: String,
     pub mime_type: Option<String>,
+    /// Size in bytes.
     pub size: usize,
 }
 
-#[derive(Debug, Serialize)]
+/// The analysis of one document.
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Analysis {
     pub format: Format,
-    /// pdf-inspector's classification: `text_based`, `scanned`, `image_based`
-    /// or `mixed`; `None` for XML.
-    pub pdf_type: Option<&'static str>,
+    /// The PDF's classification; `null` for XML.
+    pub pdf_type: Option<PdfType>,
+    /// `0` for XML.
     pub page_count: u32,
     pub text_source: TextSource,
+    /// 1-indexed numbers of the pages without a usable text layer.
     pub pages_needing_ocr: Vec<u32>,
     pub pages: Vec<Page>,
     pub attachments: Vec<AttachmentInfo>,
+    /// The e-invoice XML embedded in the PDF, or the standalone XML document.
     pub einvoice: Option<EInvoice>,
+    /// Field candidates; `null` without text (XML, or OCR off or failed).
     pub candidates: Option<Candidates>,
-    /// What OCR did; `None` for XML.
+    /// What OCR did; `null` for XML.
     pub ocr: Option<OcrReport>,
     pub processing_ms: u64,
 }
@@ -169,7 +206,7 @@ fn analyze_pdf(bytes: &[u8], ocr_settings: &OcrSettings) -> Result<Analysis, Ana
 
     Ok(Analysis {
         format: Format::Pdf,
-        pdf_type: Some(pdf_type_name(detection.pdf_type)),
+        pdf_type: Some(detection.pdf_type.into()),
         page_count: detection.page_count,
         text_source,
         pages_needing_ocr: markdown.pages_needing_ocr.clone(),
@@ -217,15 +254,6 @@ fn standalone_xml(bytes: &[u8]) -> Option<&str> {
         .trim_start()
         .starts_with('<')
         .then_some(text)
-}
-
-fn pdf_type_name(pdf_type: PdfType) -> &'static str {
-    match pdf_type {
-        PdfType::TextBased => "text_based",
-        PdfType::Scanned => "scanned",
-        PdfType::ImageBased => "image_based",
-        PdfType::Mixed => "mixed",
-    }
 }
 
 #[cfg(test)]

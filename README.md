@@ -14,6 +14,8 @@ The service is stateless and keeps nothing it receives.
 
 ## API
 
+[`openapi.json`](openapi.json) describes the API as OpenAPI 3.1, and every instance serves it at `GET /openapi.json` without a token. `cargo run -- openapi > openapi.json` regenerates it from the code; a test fails when the committed document is stale.
+
 ```http
 POST /v1/analyze
 Authorization: Bearer <access token>
@@ -61,7 +63,7 @@ The answer is JSON:
 }
 ```
 
-Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, `503 auth_unavailable` (the issuer's JWKS cannot be fetched), `400 empty_body`, `415 unsupported_format` (neither PDF nor CII/UBL XML), `422 unreadable_pdf`, `503 timeout` (no analysis slot freed up, or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS`). `GET /health` answers `ok` without a token.
+Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, `503 auth_unavailable` (the issuer's JWKS cannot be fetched), `400 empty_body`, `415 unsupported_format` (neither PDF nor CII/UBL XML), `422 unreadable_pdf`, `503 timeout` (no analysis slot freed up, or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS`). `GET /health` answers `ok` without a token. A body larger than `DOCPIPE_MAX_BODY_MB` answers `413` without JSON.
 
 ### How fields are read
 
