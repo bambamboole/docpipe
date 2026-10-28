@@ -11,3 +11,4 @@ pub mod layout;
 pub mod line_items;
 pub mod ocr;
 pub mod seller;
+pub mod telemetry;

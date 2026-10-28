@@ -6,6 +6,7 @@
 
 use lopdf::{Dictionary, Document, Object};
 use serde::Serialize;
+use utoipa::ToSchema;
 
 /// Embedded files larger than this are skipped rather than decompressed.
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
@@ -17,7 +18,8 @@ pub struct Attachment {
     pub content: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// The syntax of an e-invoice XML document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EInvoiceSyntax {
     /// UN/CEFACT Cross Industry Invoice: ZUGFeRD, Factur-X, XRechnung CII.
@@ -26,10 +28,11 @@ pub enum EInvoiceSyntax {
     Ubl,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// An e-invoice XML document, returned as is.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct EInvoice {
     pub syntax: EInvoiceSyntax,
-    /// The attachment's file name, or `None` for a standalone XML document.
+    /// The attachment's file name, or `null` for a standalone XML document.
     pub filename: Option<String>,
     pub xml: String,
 }

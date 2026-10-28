@@ -1,0 +1,771 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "docpipe",
+    "description": "Analyses German invoices and quotes: PDF classification, the text of every page, OCR of scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to confirm. The service is stateless and keeps nothing it receives.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "{base_url}",
+      "description": "A docpipe instance",
+      "variables": {
+        "base_url": {
+          "default": "http://localhost:8080",
+          "description": "Where docpipe runs"
+        }
+      }
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Health check",
+        "description": "Answers `ok` while the service runs. It needs no token.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "The service runs.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ok"
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/v1/analyze": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "summary": "Analyse a document",
+        "description": "Takes a PDF or a standalone CII/UBL e-invoice XML as the raw request body.\nText-based pages are read from their text layer; pages without one go to\nOCR, one document at a time. Candidates are proposals: a field that cannot\nbe read with confidence is `null`.",
+        "operationId": "analyze_document",
+        "requestBody": {
+          "description": "The document as the raw body, at most `DOCPIPE_MAX_BODY_MB` megabytes.",
+          "content": {
+            "application/pdf": {},
+            "application/xml": {},
+            "text/xml": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The analysis.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Analysis"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is empty (`empty_body`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The bearer token is missing or invalid (`unauthorized`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body exceeds `DOCPIPE_MAX_BODY_MB`."
+          },
+          "415": {
+            "description": "The body is neither a PDF nor a CII/UBL e-invoice XML (`unsupported_format`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The PDF cannot be read (`unreadable_pdf`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The analysis failed (`internal_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The issuer's keys cannot be fetched (`auth_unavailable`), or no analysis slot freed up or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS` (`timeout`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Amounts": {
+        "type": "object",
+        "description": "The document's totals. Without a consistent triple, only labelled amounts\nare returned.",
+        "required": [
+          "consistent",
+          "gross",
+          "net",
+          "tax",
+          "tax_rate"
+        ],
+        "properties": {
+          "consistent": {
+            "type": "boolean",
+            "description": "Whether net + tax = gross was found on the document."
+          },
+          "gross": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "net": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Decimal strings with a dot and two fraction digits, e.g. `3250.00`."
+          },
+          "tax": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tax_rate": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "VAT rate in percent, e.g. `19`, when net and tax add up to gross.",
+            "minimum": 0
+          }
+        }
+      },
+      "Analysis": {
+        "type": "object",
+        "description": "The analysis of one document.",
+        "required": [
+          "attachments",
+          "candidates",
+          "einvoice",
+          "format",
+          "ocr",
+          "page_count",
+          "pages",
+          "pages_needing_ocr",
+          "pdf_type",
+          "processing_ms",
+          "text_source"
+        ],
+        "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentInfo"
+            }
+          },
+          "candidates": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Candidates",
+                "description": "Field candidates; `null` without text (XML, or OCR off or failed)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "einvoice": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EInvoice",
+                "description": "The e-invoice XML embedded in the PDF, or the standalone XML document."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "format": {
+            "$ref": "#/components/schemas/Format"
+          },
+          "ocr": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OcrReport",
+                "description": "What OCR did; `null` for XML."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "page_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`0` for XML.",
+            "minimum": 0
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Page"
+            }
+          },
+          "pages_needing_ocr": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "1-indexed numbers of the pages without a usable text layer."
+          },
+          "pdf_type": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PdfType",
+                "description": "The PDF's classification; `null` for XML."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "processing_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "text_source": {
+            "$ref": "#/components/schemas/TextSource"
+          }
+        }
+      },
+      "AttachmentInfo": {
+        "type": "object",
+        "description": "A file embedded in the PDF.",
+        "required": [
+          "filename",
+          "mime_type",
+          "size"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "type": "integer",
+            "description": "Size in bytes.",
+            "minimum": 0
+          }
+        }
+      },
+      "Candidates": {
+        "type": "object",
+        "description": "Field candidates of a German invoice or quote, for a person to confirm. A\nfield that cannot be read with confidence is `null`.",
+        "required": [
+          "amounts",
+          "document_kind",
+          "due_date",
+          "ibans",
+          "invoice_kind",
+          "issue_date",
+          "line_items",
+          "number",
+          "seller_name",
+          "valid_until",
+          "vat_ids"
+        ],
+        "properties": {
+          "amounts": {
+            "$ref": "#/components/schemas/Amounts"
+          },
+          "document_kind": {
+            "$ref": "#/components/schemas/DocumentKind"
+          },
+          "due_date": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Field"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ibans": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IBANs without spaces, checked with their ISO 13616 check digits."
+          },
+          "invoice_kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InvoiceKind",
+                "description": "Only for invoices."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issue_date": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Field"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "line_items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LineItem"
+            }
+          },
+          "number": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Field",
+                "description": "The invoice or quote number."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seller_name": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Field",
+                "description": "The issuing company, by its name with a legal form."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "valid_until": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Field",
+                "description": "The end of a quote's validity."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vat_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "German and Austrian VAT IDs without spaces."
+          }
+        }
+      },
+      "DocumentKind": {
+        "type": "string",
+        "description": "What the document is, judged by its title and labels.",
+        "enum": [
+          "invoice",
+          "quote",
+          "credit_note",
+          "other"
+        ]
+      },
+      "EInvoice": {
+        "type": "object",
+        "description": "An e-invoice XML document, returned as is.",
+        "required": [
+          "filename",
+          "syntax",
+          "xml"
+        ],
+        "properties": {
+          "filename": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The attachment's file name, or `null` for a standalone XML document."
+          },
+          "syntax": {
+            "$ref": "#/components/schemas/EInvoiceSyntax"
+          },
+          "xml": {
+            "type": "string"
+          }
+        }
+      },
+      "EInvoiceSyntax": {
+        "type": "string",
+        "description": "The syntax of an e-invoice XML document.",
+        "enum": [
+          "cii",
+          "ubl"
+        ]
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "An error answer.",
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "description": "A sentence for people; match on `error` instead."
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "description": "The error codes of the API.",
+        "enum": [
+          "unauthorized",
+          "auth_unavailable",
+          "empty_body",
+          "unsupported_format",
+          "unreadable_pdf",
+          "timeout",
+          "internal_error"
+        ]
+      },
+      "Field": {
+        "type": "object",
+        "description": "A value and where it was read.",
+        "required": [
+          "line",
+          "page",
+          "value"
+        ],
+        "properties": {
+          "line": {
+            "type": "string",
+            "description": "The line the value was read from."
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1-indexed page number.",
+            "minimum": 0
+          },
+          "value": {
+            "type": "string",
+            "description": "The normalized value; dates as `YYYY-MM-DD`."
+          }
+        }
+      },
+      "Format": {
+        "type": "string",
+        "description": "The kind of document that was sent.",
+        "enum": [
+          "pdf",
+          "xml"
+        ]
+      },
+      "InvoiceKind": {
+        "type": "string",
+        "description": "A standard, partial (`Abschlagsrechnung`, `Teilrechnung`) or final\n(`Schlussrechnung`) invoice.",
+        "enum": [
+          "standard",
+          "partial",
+          "final"
+        ]
+      },
+      "LineItem": {
+        "type": "object",
+        "description": "One position of a quote or invoice.",
+        "required": [
+          "description",
+          "optional",
+          "page",
+          "position",
+          "quantity",
+          "section",
+          "total",
+          "unit",
+          "unit_price"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "The position's text, its lines joined with spaces."
+          },
+          "optional": {
+            "type": "boolean",
+            "description": "An optional, alternative or contingency position, which is not part of\nthe document's total."
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1-indexed page number of the position's first line.",
+            "minimum": 0
+          },
+          "position": {
+            "type": "string",
+            "description": "The position number as printed, e.g. `1.2` or `10073`."
+          },
+          "quantity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Decimal string with a dot, e.g. `82.45`; `1` for a lump sum."
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The heading of the title or group the position belongs to."
+          },
+          "total": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The unit as printed, e.g. `m²`, `Stk` or `pauschal`."
+          },
+          "unit_price": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Decimal strings with a dot and two fraction digits."
+          }
+        }
+      },
+      "OcrPage": {
+        "type": "object",
+        "description": "A page read by OCR.",
+        "required": [
+          "confidence",
+          "markdown",
+          "number",
+          "weak"
+        ],
+        "properties": {
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The recognizer's mean confidence. It stays high even on poor scans and\nis no quality gate."
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1-indexed page number.",
+            "minimum": 0
+          },
+          "weak": {
+            "type": "boolean",
+            "description": "Whether pdf-inspector suggests a stronger document parser for the page."
+          }
+        }
+      },
+      "OcrReport": {
+        "type": "object",
+        "description": "What OCR did for the pages without a usable text layer.",
+        "required": [
+          "error",
+          "ocr_ms",
+          "pages",
+          "render_ms",
+          "status"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why OCR failed; the native result is returned instead."
+          },
+          "ocr_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OcrPage"
+            }
+          },
+          "render_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/OcrStatus"
+          }
+        }
+      },
+      "OcrStatus": {
+        "type": "string",
+        "description": "Whether OCR ran.",
+        "enum": [
+          "not_needed",
+          "disabled",
+          "applied",
+          "failed"
+        ]
+      },
+      "Page": {
+        "type": "object",
+        "description": "One page of a PDF.",
+        "required": [
+          "markdown",
+          "needs_ocr",
+          "number",
+          "ocr",
+          "text"
+        ],
+        "properties": {
+          "markdown": {
+            "type": "string",
+            "description": "The page as Markdown, with tables and headings."
+          },
+          "needs_ocr": {
+            "type": "boolean",
+            "description": "Whether the page has no usable text layer."
+          },
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1-indexed.",
+            "minimum": 0
+          },
+          "ocr": {
+            "type": "boolean",
+            "description": "Whether `text` and `markdown` come from OCR."
+          },
+          "text": {
+            "type": "string",
+            "description": "The page's lines, top to bottom."
+          }
+        }
+      },
+      "PdfType": {
+        "type": "string",
+        "description": "pdf-inspector's classification of a PDF.",
+        "enum": [
+          "text_based",
+          "scanned",
+          "image_based",
+          "mixed"
+        ]
+      },
+      "TextSource": {
+        "type": "string",
+        "description": "Where the pages' text comes from.",
+        "enum": [
+          "native",
+          "ocr",
+          "mixed",
+          "none"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "With `AUTH_MODE=jwt` an RS256 access token of the configured issuer, with `AUTH_MODE=api_key` the static API key. With `AUTH_MODE=none` no token is required."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "analysis",
+      "description": "Document analysis"
+    },
+    {
+      "name": "operations",
+      "description": "Health checks"
+    }
+  ]
+}

@@ -6,19 +6,28 @@ use std::time::Duration;
 use docpipe::auth::Auth;
 use docpipe::http::{Config, router};
 use docpipe::ocr::OcrSettings;
-use tracing_subscriber::EnvFilter;
+use docpipe::telemetry::{self, SentrySettings};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // lopdf warns about every recoverable defect in a PDF and ONNX Runtime
-    // logs every allocation; neither is ours to act on.
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,lopdf=error,ort=warn")),
-        )
-        .init();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `docpipe openapi` prints the OpenAPI document and exits.
+    if std::env::args().nth(1).as_deref() == Some("openapi") {
+        println!("{}", docpipe::http::openapi().to_pretty_json()?);
+        return Ok(());
+    }
 
+    // Sentry starts before the runtime, so its hub reaches every worker thread.
+    let sentry = SentrySettings::from_env()?;
+    let reports_to_sentry = sentry.is_some();
+    let _telemetry = telemetry::init(sentry);
+    tracing::info!(sentry = reports_to_sentry, "telemetry configured");
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve())
+}
+
+async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|port| port.parse().ok())

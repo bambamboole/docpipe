@@ -14,6 +14,8 @@ The service is stateless and keeps nothing it receives.
 
 ## API
 
+[`openapi.json`](openapi.json) describes the API as OpenAPI 3.1, and every instance serves it at `GET /openapi.json` without a token. `cargo run -- openapi > openapi.json` regenerates it from the code; a test fails when the committed document is stale.
+
 ```http
 POST /v1/analyze
 Authorization: Bearer <access token>
@@ -61,7 +63,7 @@ The answer is JSON:
 }
 ```
 
-Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, `503 auth_unavailable` (the issuer's JWKS cannot be fetched), `400 empty_body`, `415 unsupported_format` (neither PDF nor CII/UBL XML), `422 unreadable_pdf`, `503 timeout` (no analysis slot freed up, or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS`). `GET /health` answers `ok` without a token.
+Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, `503 auth_unavailable` (the issuer's JWKS cannot be fetched), `400 empty_body`, `415 unsupported_format` (neither PDF nor CII/UBL XML), `422 unreadable_pdf`, `503 timeout` (no analysis slot freed up, or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS`). `GET /health` answers `ok` without a token. A body larger than `DOCPIPE_MAX_BODY_MB` answers `413` without JSON.
 
 ### How fields are read
 
@@ -102,6 +104,14 @@ The JWKS is fetched on the first request and again when a token names an unknown
 | `DOCPIPE_OCR_MODEL_DIR` | – | Complete PP-OCRv6 Small model directory; without it, models are downloaded into the cache on first use. Set in the Docker image. |
 | `PDFIUM_LIB_PATH`, `ORT_DYLIB_PATH` | – | PDFium and ONNX Runtime shared libraries for OCR. Set in the Docker image. |
 | `RUST_LOG` | `info,lopdf=error,ort=warn` | Log filter; logs are JSON on stdout |
+| `SENTRY_DSN` | – | Report to a Sentry-compatible server such as [Rustrak](https://github.com/rustrak/rustrak); unset, nothing is sent |
+| `SENTRY_RELEASE` | `docpipe@<version>` | Release of the reports |
+| `SENTRY_ENVIRONMENT` | – | Environment of the reports |
+| `SENTRY_LOGS` | `off` | Lowest level sent as structured logs: `error`, `warn`, `info` or `debug` |
+
+## Error reporting
+
+With `SENTRY_DSN` set, docpipe reports to Sentry or any server that speaks its protocol. `ERROR` events become issues with the `INFO` events before them as breadcrumbs, and panics are reported too. `SENTRY_LOGS` additionally sends every event from that level on as a structured log. `RUST_LOG` filters both stdout and Sentry. Reports carry no request data and, like the logs, no document content.
 
 ## Development
 

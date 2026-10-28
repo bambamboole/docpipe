@@ -7,4 +7,5 @@ Read [README.md](README.md) first: it describes the API, how fields are read and
 - Candidates are proposals: prefer leaving a field empty over returning a guess. Every heuristic in `src/candidates.rs` gets a test that names the layout it handles.
 - The service is stateless. It must not write received documents to disk or log their content.
 - E-invoice XML is returned as is; parsing it belongs to the consuming application.
+- The API is described with utoipa: a changed response type or route needs its annotations updated and `cargo run -- openapi > openapi.json`.
 - The JWT tests generate their RSA keys at runtime (`auth::tests`); never commit keys.

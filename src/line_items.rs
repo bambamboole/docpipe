@@ -13,15 +13,20 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::layout::{Line, Span};
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// One position of a quote or invoice.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct LineItem {
+    /// The position number as printed, e.g. `1.2` or `10073`.
     pub position: String,
+    /// The position's text, its lines joined with spaces.
     pub description: String,
-    /// Decimal string with a dot, e.g. `70.95`.
+    /// Decimal string with a dot, e.g. `82.45`; `1` for a lump sum.
     pub quantity: Option<String>,
+    /// The unit as printed, e.g. `m²`, `Stk` or `pauschal`.
     pub unit: Option<String>,
     /// Decimal strings with a dot and two fraction digits.
     pub unit_price: Option<String>,
@@ -31,6 +36,7 @@ pub struct LineItem {
     pub optional: bool,
     /// The heading of the title or group the position belongs to.
     pub section: Option<String>,
+    /// 1-indexed page number of the position's first line.
     pub page: u32,
 }
 
