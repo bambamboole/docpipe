@@ -16,6 +16,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::layout::{Line, Span};
+use crate::profile::{LineItemWords, Profile};
 
 /// One position of a quote or invoice.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
@@ -51,21 +52,7 @@ regex!(
     QUANTITY,
     r"^(-?\d{1,3}(?:\.\d{3})+(?:,\d+)?|-?\d+(?:,\d+)?)\s*([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß²³./]{0,11})$"
 );
-regex!(LUMP_SUM, r"(?i)^(?:pauschal|pausch\.?|psch\.?|pschl\.?)$");
 regex!(AMOUNT, r"^(-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2})\s*(?:€|EUR)?$");
-regex!(
-    OPTIONAL_MARKER,
-    r"(?i)^(?:bedarf|bedarfsposition|eventual|eventualposition|alternativ|alternativposition|optional|alt\.|nur\s+ep)$"
-);
-regex!(
-    OPTIONAL_SECTION,
-    r"(?i)eventual|optional|alternativ|nicht\s+in\s+der\s+angebotssumme|nicht\s+im\s+(?:basis|gesamt|angebots)preis"
-);
-regex!(NOTE, r"(?i)^(?:hinweis|achtung|anmerkung|bitte\s+beachten|wichtig)\b");
-regex!(
-    TOTAL_LINE,
-    r"(?i)^(?:übertrag|titelsumme|zwischensumme|gesamt|summe|nachlass|rabatt|skonto|netto|brutto)|mehrwertsteuer|umsatzsteuer|\bmwst\b"
-);
 
 /// How far, in PDF points, a position number may sit from the column of the
 /// first one.
@@ -77,7 +64,8 @@ const FOOTER_LINES: usize = 4;
 
 /// The positions of the document; empty when it has fewer than two, which
 /// leaves letters and receipts without a misread table.
-pub fn extract(lines: &[Line]) -> Vec<LineItem> {
+pub fn extract(lines: &[Line], profile: &Profile) -> Vec<LineItem> {
+    let words = &profile.line_items;
     let repeated = repeated_lines(lines);
     let lines: Vec<&Line> = lines
         .iter()
@@ -99,13 +87,13 @@ pub fn extract(lines: &[Line]) -> Vec<LineItem> {
                 column.get_or_insert(item.column);
                 items.push(item.item);
             }
-            open = Some(Open::start(line, heading.section.clone(), heading.optional));
+            open = Some(Open::start(line, heading.section.clone(), heading.optional, words));
             heading.used = true;
             continue;
         }
 
         let text = line.text();
-        let is_total = TOTAL_LINE.is_match(text.trim()) && line.spans.iter().any(|span| is_amount(&span.text));
+        let is_total = words.total_line.is_match(text.trim()) && line.spans.iter().any(|span| is_amount(&span.text));
 
         if let Some(current) = open.as_mut() {
             if !is_total && current.continues_with(line) {
@@ -119,7 +107,7 @@ pub fn extract(lines: &[Line]) -> Vec<LineItem> {
         }
 
         if !is_total {
-            heading.read(&text);
+            heading.read(&text, words);
         }
     }
 
@@ -157,15 +145,15 @@ enum HeadingKind {
 }
 
 impl Heading {
-    fn read(&mut self, text: &str) {
+    fn read(&mut self, text: &str, words: &LineItemWords) {
         let text = text.trim();
-        let (kind, name) = match text.strip_prefix("Titel:") {
+        let (kind, name) = match text.strip_prefix(words.title_prefix.as_str()) {
             Some(name) => (HeadingKind::Title, name.trim()),
             None if text.ends_with(':') => (HeadingKind::Labelled, text.trim_end_matches(':').trim()),
             None => (HeadingKind::Plain, text),
         };
 
-        if OPTIONAL_SECTION.is_match(name) {
+        if words.optional_section.is_match(name) {
             self.optional = true;
         } else if kind != HeadingKind::Plain {
             self.optional = false;
@@ -189,10 +177,11 @@ impl Heading {
 }
 
 /// A position while its lines are collected.
-struct Open {
+struct Open<'a> {
     lines: Vec<Line>,
     section: Option<String>,
     optional: bool,
+    words: &'a LineItemWords,
 }
 
 struct Finished {
@@ -200,12 +189,13 @@ struct Finished {
     column: f32,
 }
 
-impl Open {
-    fn start(line: &Line, section: Option<String>, optional: bool) -> Self {
+impl<'a> Open<'a> {
+    fn start(line: &Line, section: Option<String>, optional: bool, words: &'a LineItemWords) -> Self {
         Self {
             lines: vec![line.clone()],
             section,
             optional,
+            words,
         }
     }
 
@@ -215,7 +205,7 @@ impl Open {
         self.lines
             .iter()
             .flat_map(|line| line.spans.iter().skip(usize::from(line == &self.lines[0])))
-            .find(|span| span_kind(span) == SpanKind::Text)
+            .find(|span| span_kind(span, self.words) == SpanKind::Text)
             .map(|span| span.x)
     }
 
@@ -229,7 +219,7 @@ impl Open {
         match self.description_x() {
             Some(x) if (x - number_x).abs() <= COLUMN_TOLERANCE => {
                 let text = line.text();
-                !text.trim_end().ends_with(':') || NOTE.is_match(&text)
+                !text.trim_end().ends_with(':') || self.words.note.is_match(&text)
             }
             Some(x) => first.x >= x - COLUMN_TOLERANCE,
             // The text starts on the next line, possibly in the number's column.
@@ -251,7 +241,7 @@ impl Open {
             let mut after_quantity = false;
 
             for span in line.spans.iter().skip(usize::from(index == 0)) {
-                match span_kind(span) {
+                match span_kind(span, self.words) {
                     SpanKind::Quantity(value, symbol) if quantity.is_none() => {
                         quantity = Some(value);
                         unit = Some(symbol);
@@ -279,7 +269,9 @@ impl Open {
         // unless the position is marked optional, which prices only its unit.
         let (unit_price, total) = match figures.as_slice() {
             [price, total, ..] => (Some(price.clone()), Some(total.clone())),
-            [only] if optional && self.lines.iter().any(has_marker_after_amount) => (Some(only.clone()), None),
+            [only] if optional && self.lines.iter().any(|line| has_marker_after_amount(line, self.words)) => {
+                (Some(only.clone()), None)
+            }
             [only] => (None, Some(only.clone())),
             [] => (None, None),
         };
@@ -309,10 +301,10 @@ enum SpanKind {
     Text,
 }
 
-fn span_kind(span: &Span) -> SpanKind {
+fn span_kind(span: &Span, words: &LineItemWords) -> SpanKind {
     let text = span.text.trim();
 
-    if LUMP_SUM.is_match(text) {
+    if words.lump_sum.is_match(text) {
         return SpanKind::Quantity("1".to_owned(), text.to_owned());
     }
     if let Some(captures) = AMOUNT.captures(text) {
@@ -321,7 +313,7 @@ fn span_kind(span: &Span) -> SpanKind {
     if let Some(captures) = QUANTITY.captures(text) {
         return SpanKind::Quantity(number(&captures[1]), captures[2].to_owned());
     }
-    if OPTIONAL_MARKER.is_match(text) {
+    if words.optional_marker.is_match(text) {
         return SpanKind::Marker;
     }
 
@@ -341,11 +333,11 @@ fn is_amount(text: &str) -> bool {
     AMOUNT.is_match(text.trim())
 }
 
-fn has_marker_after_amount(line: &Line) -> bool {
+fn has_marker_after_amount(line: &Line, words: &LineItemWords) -> bool {
     line.spans
         .iter()
         .skip_while(|span| !is_amount(&span.text))
-        .any(|span| OPTIONAL_MARKER.is_match(span.text.trim()))
+        .any(|span| words.optional_marker.is_match(span.text.trim()))
 }
 
 /// `1.234,56` as `1234.56`.
@@ -442,6 +434,11 @@ mod tests {
     use super::*;
     use crate::layout::lines;
     use crate::layout::tests::item;
+    use crate::profile::tests::german;
+
+    fn extract(lines: &[Line]) -> Vec<LineItem> {
+        super::extract(lines, german())
+    }
 
     /// Position, quantity, unit, unit price, total and whether it is optional.
     type Row<'a> = (

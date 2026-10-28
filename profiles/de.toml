@@ -1,0 +1,58 @@
+# German invoices and quotes.
+#
+# Patterns are regular expressions in the syntax of Rust's regex crate and
+# match case-insensitively, except in [seller]. Word lists match as plain,
+# lowercase substrings. See README.md, "Language profiles".
+
+id = "de"
+name = "German"
+
+# A label is followed by its value: in the same run, to its right, or below it.
+[labels]
+invoice_number = '(?:\b(?:rechnungs?\s*-?\s*(?:nr|nummer|no)\.?|rechnung\s+nr\.?|belegnummer|beleg\s*-?\s*nr\.?)|(?:^|[\s,;(])nr\.)\s*:?'
+quote_number = '(?:\b(?:angebots?\s*-?\s*(?:nr|nummer|no)\.?|angebot\s+nr\.?|kostenvoranschlag\s+nr\.?|belegnummer|beleg\s*-?\s*nr\.?)|(?:^|[\s,;(])nr\.)\s*:?'
+issue_date = '\b(?:rechnungsdatum|angebotsdatum|belegdatum|datum|,\s*den)\s*:?'
+due_date = '\b(?:fälligkeitsdatum|fällig\s+am|fällig|zahlbar\s+bis(?:\s+zum)?|zahlungsziel)\s*:?'
+valid_until = '\b(?:gültig\s+bis|bindefrist(?:\s+bis)?|angebot\s+gilt\s+bis)\s*:?'
+gross = '\b(?:gesamtbetrag|gesamtsumme|rechnungsbetrag|bruttobetrag|endbetrag|fälliger\s+betrag|zu\s+zahlen|gesamt\s*\(brutto\)|summe\s+brutto|brutto)\b'
+net = '\b(?:nettobetrag|nettosumme|summe\s+netto|gesamt\s*\(netto\)|netto)\b'
+
+# Words that score a document kind; the first page counts double, a credit note
+# word three times.
+[document_kind]
+invoice = ["rechnung", "rechnungsnummer", "rechnungsdatum", "zahlbar", "fällig", "leistungszeitraum"]
+quote = ["angebot", "kostenvoranschlag", "angebotsnummer", "gültig bis", "bindefrist", "richtpreis"]
+credit_note = ["gutschrift"]
+
+# Words on the first page of an invoice; final wins over partial.
+[invoice_kind]
+final = ["schlussrechnung"]
+partial = ["abschlagsrechnung", "teilrechnung", "abschlag"]
+
+[line_items]
+# A title heading, replaced only by the next title: `Titel: 2. Erdungsarbeiten`.
+title_prefix = "Titel:"
+# A span that stands for the quantity 1 of a lump-sum position.
+lump_sum = '^(?:pauschal|pausch\.?|psch\.?|pschl\.?)$'
+# A span that marks a position as optional, alternative or contingency.
+optional_marker = '^(?:bedarf|bedarfsposition|eventual|eventualposition|alternativ|alternativposition|optional|alt\.|nur\s+ep)$'
+# A heading whose positions are optional.
+optional_section = 'eventual|optional|alternativ|nicht\s+in\s+der\s+angebotssumme|nicht\s+im\s+(?:basis|gesamt|angebots)preis'
+# A line ending with a colon that still belongs to the position above.
+note = '^(?:hinweis|achtung|anmerkung|bitte\s+beachten|wichtig)\b'
+# A line with an amount that sums positions instead of being one.
+total_line = '^(?:übertrag|titelsumme|zwischensumme|gesamt|summe|nachlass|rabatt|skonto|netto|brutto)|mehrwertsteuer|umsatzsteuer|\bmwst\b'
+
+# The seller is a company named with a legal form. These patterns are
+# case-sensitive.
+[seller]
+legal_forms = ['GmbH', 'mbH', 'GbR', 'UG(?:\s\(haftungsbeschränkt\))?', 'e\.\s?K\.']
+# Partnerships with a company as general partner: `GmbH & Co. KG`.
+partnership_forms = ['KG', 'OHG']
+# Forms that also abbreviate other words (`KG` is the basement) and so count
+# only at the end of the name's part of the line.
+trailing_legal_forms = ['KG', 'AG', 'SE', 'OHG']
+# Words that join the parts of a name: `Muster & Partner`.
+connectors = ['&', '\+', 'und']
+# Words that introduce a company in running text rather than name it.
+leading_words = ['Firma', 'Fa\.', 'Die', 'Der', 'Den', 'Von', 'Bei']

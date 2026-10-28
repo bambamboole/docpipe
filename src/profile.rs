@@ -1,0 +1,271 @@
+//! Language profiles: the words a document is read by.
+//!
+//! Every profile is a TOML file in `profiles/`, compiled into the binary. It
+//! holds the labels of fields, the words that tell document kinds apart, the
+//! vocabulary of line items and the legal forms of companies. Everything that
+//! does not depend on the language, such as reading the layout or checking
+//! IBANs, stays in the code.
+
+use std::sync::LazyLock;
+
+use regex::Regex;
+use serde::Deserialize;
+
+/// The bundled profiles, in the order they are tried.
+const SOURCES: &[(&str, &str)] = &[("profiles/de.toml", include_str!("../profiles/de.toml"))];
+
+static PROFILES: LazyLock<Vec<Profile>> = LazyLock::new(|| {
+    SOURCES
+        .iter()
+        .map(|(path, source)| Profile::parse(source).unwrap_or_else(|error| panic!("{path}: {error}")))
+        .collect()
+});
+
+pub fn all() -> &'static [Profile] {
+    &PROFILES
+}
+
+pub fn get(id: &str) -> Option<&'static Profile> {
+    all().iter().find(|profile| profile.id == id)
+}
+
+/// The profile every document is read with until profiles are detected per
+/// document.
+pub fn fallback() -> &'static Profile {
+    get("de").expect("the German profile is bundled")
+}
+
+#[derive(Debug)]
+pub struct Profile {
+    /// A BCP 47 language tag, such as `de`.
+    pub id: String,
+    pub name: String,
+    pub labels: Labels,
+    pub document_kind: DocumentKindWords,
+    pub invoice_kind: InvoiceKindWords,
+    pub line_items: LineItemWords,
+    pub seller: SellerWords,
+}
+
+#[derive(Debug)]
+pub struct Labels {
+    pub invoice_number: Regex,
+    pub quote_number: Regex,
+    pub issue_date: Regex,
+    pub due_date: Regex,
+    pub valid_until: Regex,
+    pub gross: Regex,
+    pub net: Regex,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentKindWords {
+    pub invoice: Vec<String>,
+    pub quote: Vec<String>,
+    pub credit_note: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvoiceKindWords {
+    pub r#final: Vec<String>,
+    pub partial: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct LineItemWords {
+    pub title_prefix: String,
+    pub lump_sum: Regex,
+    pub optional_marker: Regex,
+    pub optional_section: Regex,
+    pub note: Regex,
+    pub total_line: Regex,
+}
+
+#[derive(Debug)]
+pub struct SellerWords {
+    /// A company name ending in a legal form.
+    pub company: Regex,
+    /// The words before a name that introduce it in running text.
+    pub leading_words: Regex,
+}
+
+/// A profile as written in its TOML file.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Source {
+    id: String,
+    name: String,
+    labels: LabelSource,
+    document_kind: DocumentKindWords,
+    invoice_kind: InvoiceKindWords,
+    line_items: LineItemSource,
+    seller: SellerSource,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LabelSource {
+    invoice_number: String,
+    quote_number: String,
+    issue_date: String,
+    due_date: String,
+    valid_until: String,
+    gross: String,
+    net: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LineItemSource {
+    title_prefix: String,
+    lump_sum: String,
+    optional_marker: String,
+    optional_section: String,
+    note: String,
+    total_line: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SellerSource {
+    legal_forms: Vec<String>,
+    partnership_forms: Vec<String>,
+    trailing_legal_forms: Vec<String>,
+    connectors: Vec<String>,
+    leading_words: Vec<String>,
+}
+
+impl Profile {
+    fn parse(source: &str) -> Result<Self, String> {
+        let source: Source = toml::from_str(source).map_err(|error| error.to_string())?;
+        let labels = source.labels;
+        let line_items = source.line_items;
+
+        Ok(Self {
+            id: source.id,
+            name: source.name,
+            labels: Labels {
+                invoice_number: insensitive("labels.invoice_number", &labels.invoice_number)?,
+                quote_number: insensitive("labels.quote_number", &labels.quote_number)?,
+                issue_date: insensitive("labels.issue_date", &labels.issue_date)?,
+                due_date: insensitive("labels.due_date", &labels.due_date)?,
+                valid_until: insensitive("labels.valid_until", &labels.valid_until)?,
+                gross: insensitive("labels.gross", &labels.gross)?,
+                net: insensitive("labels.net", &labels.net)?,
+            },
+            document_kind: lowercase_words(source.document_kind),
+            invoice_kind: InvoiceKindWords {
+                r#final: lowercase(source.invoice_kind.r#final),
+                partial: lowercase(source.invoice_kind.partial),
+            },
+            line_items: LineItemWords {
+                title_prefix: line_items.title_prefix,
+                lump_sum: insensitive("line_items.lump_sum", &line_items.lump_sum)?,
+                optional_marker: insensitive("line_items.optional_marker", &line_items.optional_marker)?,
+                optional_section: insensitive("line_items.optional_section", &line_items.optional_section)?,
+                note: insensitive("line_items.note", &line_items.note)?,
+                total_line: insensitive("line_items.total_line", &line_items.total_line)?,
+            },
+            seller: SellerWords {
+                company: compile("seller", &company_pattern(&source.seller))?,
+                leading_words: compile(
+                    "seller.leading_words",
+                    &format!(r"^(?:(?:{})\s+)+", source.seller.leading_words.join("|")),
+                )?,
+            },
+        })
+    }
+}
+
+/// Up to six capitalised words, joined by a connector, then a legal form,
+/// optionally as a partnership (`GmbH & Co. KG`). A trailing legal form only
+/// counts at the end of the name's part of the line.
+fn company_pattern(seller: &SellerSource) -> String {
+    let connectors = seller.connectors.join("|");
+    let word = r"\p{Lu}[\p{L}\d.'\-]*";
+    let partnership = if seller.partnership_forms.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r"(?:\s*(?:{connectors})\s*Co\.?\s*(?:{}))?",
+            seller.partnership_forms.join("|")
+        )
+    };
+    let mut forms = vec![format!(
+        r"(?:{}){partnership}(?:[\s,;:*|·]|$)",
+        seller.legal_forms.join("|")
+    )];
+
+    if !seller.trailing_legal_forms.is_empty() {
+        forms.push(format!(
+            r"(?:{})\s*(?:[,;:*|·\-]|$)",
+            seller.trailing_legal_forms.join("|")
+        ));
+    }
+
+    format!(
+        r"\b{word}(?:\s+(?:{word}|{connectors})){{0,5}}\s+(?:{})",
+        forms.join("|")
+    )
+}
+
+fn insensitive(key: &str, pattern: &str) -> Result<Regex, String> {
+    compile(key, &format!("(?i){pattern}"))
+}
+
+fn compile(key: &str, pattern: &str) -> Result<Regex, String> {
+    Regex::new(pattern).map_err(|error| format!("{key}: {error}"))
+}
+
+fn lowercase_words(words: DocumentKindWords) -> DocumentKindWords {
+    DocumentKindWords {
+        invoice: lowercase(words.invoice),
+        quote: lowercase(words.quote),
+        credit_note: lowercase(words.credit_note),
+    }
+}
+
+fn lowercase(words: Vec<String>) -> Vec<String> {
+    words.into_iter().map(|word| word.to_lowercase()).collect()
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    pub(crate) fn german() -> &'static Profile {
+        fallback()
+    }
+
+    #[test]
+    fn parses_every_bundled_profile() {
+        assert_eq!(all().len(), SOURCES.len());
+
+        for profile in all() {
+            assert!(!profile.document_kind.invoice.is_empty(), "{}", profile.id);
+            assert!(!profile.document_kind.quote.is_empty(), "{}", profile.id);
+            assert!(!profile.document_kind.credit_note.is_empty(), "{}", profile.id);
+        }
+    }
+
+    #[test]
+    fn gives_every_profile_its_own_id() {
+        let mut ids: Vec<&str> = all().iter().map(|profile| profile.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+
+        assert_eq!(ids.len(), all().len());
+    }
+
+    #[test]
+    fn rejects_unknown_keys_and_broken_patterns() {
+        let german = include_str!("../profiles/de.toml");
+
+        assert!(Profile::parse(&german.replace("[labels]", "[labels]\ntotal = 'x'")).is_err());
+        assert!(
+            Profile::parse(&german.replace("net = '", "net = '(")).is_err_and(|error| error.contains("labels.net"))
+        );
+    }
+}

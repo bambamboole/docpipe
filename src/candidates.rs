@@ -1,5 +1,5 @@
-//! Field candidates of German invoices and quotes, read from reconstructed
-//! lines.
+//! Field candidates of invoices and quotes, read from reconstructed lines with
+//! the words of a language [`Profile`].
 //!
 //! Everything here is a proposal for a person to confirm: values carry the line
 //! they were read from, and absent fields stay `None` rather than being guessed.
@@ -12,6 +12,7 @@ use utoipa::ToSchema;
 
 use crate::layout::{Line, Span};
 use crate::line_items::{self, LineItem};
+use crate::profile::Profile;
 use crate::seller;
 
 /// What the document is, judged by its title and labels.
@@ -82,27 +83,28 @@ pub struct Candidates {
     pub line_items: Vec<LineItem>,
 }
 
-pub fn extract(lines: &[Line]) -> Candidates {
-    let document_kind = document_kind(lines);
+pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
+    let labels = &profile.labels;
+    let document_kind = document_kind(lines, profile);
     let number_label = match document_kind {
-        DocumentKind::Quote => &*QUOTE_NUMBER_LABEL,
-        _ => &*INVOICE_NUMBER_LABEL,
+        DocumentKind::Quote => &labels.quote_number,
+        _ => &labels.invoice_number,
     };
 
     Candidates {
         document_kind,
-        invoice_kind: (document_kind == DocumentKind::Invoice).then(|| invoice_kind(lines)),
+        invoice_kind: (document_kind == DocumentKind::Invoice).then(|| invoice_kind(lines, profile)),
         number: labelled(lines, number_label, &NUMBER),
-        issue_date: labelled(lines, &ISSUE_DATE_LABEL, &DATE)
+        issue_date: labelled(lines, &labels.issue_date, &DATE)
             .or_else(|| first_match(lines, &DATE))
             .map(normalize_date),
-        due_date: labelled(lines, &DUE_DATE_LABEL, &DATE).map(normalize_date),
-        valid_until: labelled(lines, &VALID_UNTIL_LABEL, &DATE).map(normalize_date),
-        amounts: amounts(lines),
+        due_date: labelled(lines, &labels.due_date, &DATE).map(normalize_date),
+        valid_until: labelled(lines, &labels.valid_until, &DATE).map(normalize_date),
+        amounts: amounts(lines, profile),
         ibans: ibans(lines),
         vat_ids: vat_ids(lines),
-        seller_name: seller::extract(lines),
-        line_items: line_items::extract(lines),
+        seller_name: seller::extract(lines, profile),
+        line_items: line_items::extract(lines, profile),
     }
 }
 
@@ -117,37 +119,10 @@ regex!(DATE, r"\b(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})\b");
 regex!(NUMBER, r"\b[A-Z0-9][A-Z0-9\-/\.]*\d[A-Z0-9\-/]*\b");
 regex!(IBAN, r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b");
 regex!(VAT_ID, r"\b(?:DE ?\d{9}|ATU ?\d{8})\b");
-regex!(
-    INVOICE_NUMBER_LABEL,
-    r"(?i)(?:\b(?:rechnungs?\s*-?\s*(?:nr|nummer|no)\.?|rechnung\s+nr\.?|belegnummer|beleg\s*-?\s*nr\.?)|(?:^|[\s,;(])nr\.)\s*:?"
-);
-regex!(
-    QUOTE_NUMBER_LABEL,
-    r"(?i)(?:\b(?:angebots?\s*-?\s*(?:nr|nummer|no)\.?|angebot\s+nr\.?|kostenvoranschlag\s+nr\.?|belegnummer|beleg\s*-?\s*nr\.?)|(?:^|[\s,;(])nr\.)\s*:?"
-);
-regex!(
-    ISSUE_DATE_LABEL,
-    r"(?i)\b(?:rechnungsdatum|angebotsdatum|belegdatum|datum|,\s*den)\s*:?"
-);
-regex!(
-    DUE_DATE_LABEL,
-    r"(?i)\b(?:fälligkeitsdatum|fällig\s+am|fällig|zahlbar\s+bis(?:\s+zum)?|zahlungsziel)\s*:?"
-);
-regex!(
-    VALID_UNTIL_LABEL,
-    r"(?i)\b(?:gültig\s+bis|bindefrist(?:\s+bis)?|angebot\s+gilt\s+bis)\s*:?"
-);
-regex!(
-    GROSS_LABEL,
-    r"(?i)\b(?:gesamtbetrag|gesamtsumme|rechnungsbetrag|bruttobetrag|endbetrag|fälliger\s+betrag|zu\s+zahlen|gesamt\s*\(brutto\)|summe\s+brutto|brutto)\b"
-);
-regex!(
-    NET_LABEL,
-    r"(?i)\b(?:nettobetrag|nettosumme|summe\s+netto|gesamt\s*\(netto\)|netto)\b"
-);
 
 /// Scores keywords; the first page, where titles sit, counts double.
-fn document_kind(lines: &[Line]) -> DocumentKind {
+fn document_kind(lines: &[Line], profile: &Profile) -> DocumentKind {
+    let words = &profile.document_kind;
     let mut invoice = 0;
     let mut quote = 0;
     let mut credit = 0;
@@ -156,31 +131,17 @@ fn document_kind(lines: &[Line]) -> DocumentKind {
         let text = line.text().to_lowercase();
         let weight = if line.page == 1 { 2 } else { 1 };
 
-        for keyword in [
-            "rechnung",
-            "rechnungsnummer",
-            "rechnungsdatum",
-            "zahlbar",
-            "fällig",
-            "leistungszeitraum",
-        ] {
-            if text.contains(keyword) {
+        for keyword in &words.invoice {
+            if text.contains(keyword.as_str()) {
                 invoice += weight;
             }
         }
-        for keyword in [
-            "angebot",
-            "kostenvoranschlag",
-            "angebotsnummer",
-            "gültig bis",
-            "bindefrist",
-            "richtpreis",
-        ] {
-            if text.contains(keyword) {
+        for keyword in &words.quote {
+            if text.contains(keyword.as_str()) {
                 quote += weight;
             }
         }
-        if text.contains("gutschrift") {
+        if words.credit_note.iter().any(|keyword| text.contains(keyword.as_str())) {
             credit += weight * 3;
         }
     }
@@ -193,7 +154,8 @@ fn document_kind(lines: &[Line]) -> DocumentKind {
     }
 }
 
-fn invoice_kind(lines: &[Line]) -> InvoiceKind {
+fn invoice_kind(lines: &[Line], profile: &Profile) -> InvoiceKind {
+    let words = &profile.invoice_kind;
     let first_page: String = lines
         .iter()
         .filter(|line| line.page == 1)
@@ -201,12 +163,9 @@ fn invoice_kind(lines: &[Line]) -> InvoiceKind {
         .collect::<Vec<_>>()
         .join("\n");
 
-    if first_page.contains("schlussrechnung") {
+    if words.r#final.iter().any(|word| first_page.contains(word.as_str())) {
         InvoiceKind::Final
-    } else if ["abschlagsrechnung", "teilrechnung", "abschlag"]
-        .iter()
-        .any(|word| first_page.contains(word))
-    {
+    } else if words.partial.iter().any(|word| first_page.contains(word.as_str())) {
         InvoiceKind::Partial
     } else {
         InvoiceKind::Standard
@@ -342,7 +301,7 @@ fn decimal(cents: i64) -> String {
     )
 }
 
-fn amounts(lines: &[Line]) -> Amounts {
+fn amounts(lines: &[Line], profile: &Profile) -> Amounts {
     let all: Vec<i64> = lines
         .iter()
         .flat_map(|line| {
@@ -371,10 +330,10 @@ fn amounts(lines: &[Line]) -> Amounts {
     };
 
     Amounts {
-        net: labelled_cents(&NET_LABEL),
+        net: labelled_cents(&profile.labels.net),
         tax: None,
         // No largest-amount fallback: a wrong total is worse than none.
-        gross: labelled_cents(&GROSS_LABEL),
+        gross: labelled_cents(&profile.labels.gross),
         tax_rate: None,
         consistent: false,
     }
@@ -464,6 +423,11 @@ mod tests {
     use super::*;
     use crate::layout::lines;
     use crate::layout::tests::item;
+    use crate::profile::tests::german;
+
+    fn extract(lines: &[Line]) -> Candidates {
+        super::extract(lines, german())
+    }
 
     /// A partial invoice laid out as label/value rows, like most German
     /// invoices.
