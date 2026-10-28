@@ -1,0 +1,19 @@
+# A deployment without a public port: other services of the same Docker
+# network reach it as http://docpipe:8080 with an access token of an allowed
+# client.
+services:
+  docpipe:
+    build:
+      context: .
+    environment:
+      AUTH_MODE: jwt
+      JWT_ISSUER: ${JWT_ISSUER:?}
+      JWT_JWKS_URL: ${JWT_JWKS_URL:?}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-}
+      JWT_ALLOWED_CLIENTS: ${JWT_ALLOWED_CLIENTS:?}
+      RUST_LOG: info,lopdf=error,ort=warn
+    # Measured on the server: about 1.1 GiB after an OCR run, which holds
+    # ONNX Runtime's memory pools; OCR runs one at a time.
+    mem_limit: 1536m
+    expose:
+      - "8080"
