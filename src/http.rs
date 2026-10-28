@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Serialize;
 use tokio::sync::Semaphore;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnFailure, TraceLayer};
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
 use utoipa::openapi::{RefOr, Schema};
 use utoipa::{Modify, OpenApi, ToSchema};
@@ -133,7 +133,9 @@ pub fn router(config: Config) -> Router {
             get(move || async move { axum::Json(Arc::clone(&openapi)) }),
         )
         .layer(DefaultBodyLimit::max(max_body_bytes))
-        .layer(TraceLayer::new_for_http())
+        // A 5xx is already logged where it arises, as an error only when it
+        // needs attention; at ERROR this would open a second Sentry issue.
+        .layer(TraceLayer::new_for_http().on_failure(DefaultOnFailure::new().level(tracing::Level::WARN)))
         .with_state(Arc::new(AppState { config, analyses }))
 }
 

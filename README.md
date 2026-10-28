@@ -104,6 +104,14 @@ The JWKS is fetched on the first request and again when a token names an unknown
 | `DOCPIPE_OCR_MODEL_DIR` | – | Complete PP-OCRv6 Small model directory; without it, models are downloaded into the cache on first use. Set in the Docker image. |
 | `PDFIUM_LIB_PATH`, `ORT_DYLIB_PATH` | – | PDFium and ONNX Runtime shared libraries for OCR. Set in the Docker image. |
 | `RUST_LOG` | `info,lopdf=error,ort=warn` | Log filter; logs are JSON on stdout |
+| `SENTRY_DSN` | – | Report to a Sentry-compatible server such as [Rustrak](https://github.com/rustrak/rustrak); unset, nothing is sent |
+| `SENTRY_RELEASE` | `docpipe@<version>` | Release of the reports |
+| `SENTRY_ENVIRONMENT` | – | Environment of the reports |
+| `SENTRY_LOGS` | `off` | Lowest level sent as structured logs: `error`, `warn`, `info` or `debug` |
+
+## Error reporting
+
+With `SENTRY_DSN` set, docpipe reports to Sentry or any server that speaks its protocol. `ERROR` events become issues with the `INFO` events before them as breadcrumbs, and panics are reported too. `SENTRY_LOGS` additionally sends every event from that level on as a structured log. `RUST_LOG` filters both stdout and Sentry. Reports carry no request data and, like the logs, no document content.
 
 ## Development
 

@@ -11,6 +11,10 @@ services:
       JWT_JWKS_URL: ${JWT_JWKS_URL:?}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-}
       JWT_ALLOWED_CLIENTS: ${JWT_ALLOWED_CLIENTS:?}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_LOGS: ${SENTRY_LOGS:-off}
       RUST_LOG: info,lopdf=error,ort=warn
     # Measured on the server: about 1.1 GiB after an OCR run, which holds
     # ONNX Runtime's memory pools; OCR runs one at a time.
