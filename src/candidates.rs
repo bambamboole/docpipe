@@ -4,16 +4,23 @@
 //! Everything here is a proposal for a person to confirm: values carry the line
 //! they were read from, and absent fields stay `None` rather than being guessed.
 
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use regex::Regex;
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::currency;
+use crate::dates::{self, Date, DateReader};
 use crate::layout::{Line, Span};
 use crate::line_items::{self, LineItem};
+use crate::numbers::{self, NumberFormat};
 use crate::profile::Profile;
 use crate::seller;
+
+/// Finds a value in a run of text and returns its byte range.
+type Find<'a> = &'a dyn Fn(&str) -> Option<Range<usize>>;
 
 /// What the document is, judged by its title and labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
@@ -54,13 +61,16 @@ pub struct Amounts {
     pub net: Option<String>,
     pub tax: Option<String>,
     pub gross: Option<String>,
+    /// The ISO 4217 code of the currency the amounts are written in, when the
+    /// document names one unambiguously next to its amounts.
+    pub currency: Option<String>,
     /// VAT rate in percent, e.g. `19`, when net and tax add up to gross.
     pub tax_rate: Option<u8>,
     /// Whether net + tax = gross was found on the document.
     pub consistent: bool,
 }
 
-/// Field candidates of a German invoice or quote, for a person to confirm. A
+/// Field candidates of an invoice or quote, for a person to confirm. A
 /// field that cannot be read with confidence is `null`.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct Candidates {
@@ -76,7 +86,8 @@ pub struct Candidates {
     pub amounts: Amounts,
     /// IBANs without spaces, checked with their ISO 13616 check digits.
     pub ibans: Vec<String>,
-    /// German and Austrian VAT IDs without spaces.
+    /// VAT identification numbers of EU countries, the United Kingdom,
+    /// Switzerland and Norway, without spaces, dots or dashes.
     pub vat_ids: Vec<String>,
     /// The issuing company, by its name with a legal form.
     pub seller_name: Option<Field>,
@@ -85,27 +96,57 @@ pub struct Candidates {
 
 pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
     let labels = &profile.labels;
+    let numbers = NumberFormat::detect(lines, profile.decimal_mark);
+    let reader = DateReader::new(lines, &profile.dates);
     let document_kind = document_kind(lines, profile);
     let number_label = match document_kind {
         DocumentKind::Quote => &labels.quote_number,
         _ => &labels.invoice_number,
     };
 
+    let find_date = |text: &str| reader.find(text);
+    // Without a label, the first date on a line that no other date label
+    // claims is the issue date.
+    let unclaimed: Vec<&Line> = lines
+        .iter()
+        .filter(|line| {
+            let text = line.text();
+            !labels.due_date.is_match(&text) && !labels.valid_until.is_match(&text)
+        })
+        .collect();
+    let issue = labelled(lines, &labels.issue_date, &find_date).or_else(|| first_match(&unclaimed, &find_date));
+    let due = labelled(lines, &labels.due_date, &find_date);
+    let valid_until = labelled(lines, &labels.valid_until, &find_date);
+    let read = |field: &Option<Field>| field.as_ref().and_then(|field| reader.read(&field.value));
+    let (issued, due_on) = dates::settle(read(&issue), read(&due));
+    let (issued_for_quote, valid_to) = dates::settle(read(&issue), read(&valid_until));
+
     Candidates {
         document_kind,
         invoice_kind: (document_kind == DocumentKind::Invoice).then(|| invoice_kind(lines, profile)),
-        number: labelled(lines, number_label, &NUMBER),
-        issue_date: labelled(lines, &labels.issue_date, &DATE)
-            .or_else(|| first_match(lines, &DATE))
-            .map(normalize_date),
-        due_date: labelled(lines, &labels.due_date, &DATE).map(normalize_date),
-        valid_until: labelled(lines, &labels.valid_until, &DATE).map(normalize_date),
-        amounts: amounts(lines, profile),
+        number: labelled(lines, number_label, &|text| {
+            NUMBER.find(text).map(|found| found.range())
+        }),
+        issue_date: dated(issue, issued.or(issued_for_quote)),
+        due_date: dated(due, due_on),
+        valid_until: dated(valid_until, valid_to),
+        amounts: amounts(lines, profile, &numbers),
         ibans: ibans(lines),
         vat_ids: vat_ids(lines),
         seller_name: seller::extract(lines, profile),
-        line_items: line_items::extract(lines, profile),
+        line_items: line_items::extract(lines, profile, &numbers),
     }
+}
+
+/// The field with its date as ISO `YYYY-MM-DD`, or none when the date could
+/// not be read with confidence.
+fn dated(field: Option<Field>, date: Option<Date>) -> Option<Field> {
+    let date = date?;
+
+    field.map(|field| Field {
+        value: date.iso(),
+        ..field
+    })
 }
 
 macro_rules! regex {
@@ -114,11 +155,46 @@ macro_rules! regex {
     };
 }
 
-regex!(AMOUNT, r"-?\b\d{1,3}(?:\.\d{3})*,\d{2}\b|-?\b\d+,\d{2}\b");
-regex!(DATE, r"\b(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})\b");
 regex!(NUMBER, r"\b[A-Z0-9][A-Z0-9\-/\.]*\d[A-Z0-9\-/]*\b");
 regex!(IBAN, r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b");
-regex!(VAT_ID, r"\b(?:DE ?\d{9}|ATU ?\d{8})\b");
+// The formats of VAT identification numbers in the EU, the United Kingdom,
+// Switzerland and Norway, with the spaces and dots they are often printed with.
+regex!(
+    VAT_ID,
+    r"(?x)\b(?:
+        ATU\s?\d{8}
+      | BE\s?[01]\d{3}[.\s]?\d{3}[.\s]?\d{3}
+      | BG\s?\d{9,10}
+      | CHE[-\s]?\d{3}[.\s]?\d{3}[.\s]?\d{3}(?:\s?(?:MWST|TVA|IVA))?
+      | CY\s?\d{8}[A-Z]
+      | CZ\s?\d{8,10}
+      | DE\s?\d{9}
+      | DK\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{2}
+      | EE\s?\d{9}
+      | EL\s?\d{9}
+      | ES\s?[A-Z0-9]\d{7}[A-Z0-9]
+      | FI\s?\d{8}
+      | FR\s?[A-HJ-NP-Z0-9]{2}\s?\d{3}\s?\d{3}\s?\d{3}
+      | GB\s?(?:\d{3}\s?\d{4}\s?\d{2}(?:\s?\d{3})?|GD\d{3}|HA\d{3})
+      | HR\s?\d{11}
+      | HU\s?\d{8}
+      | IE\s?(?:\d{7}[A-W][A-I]?|\d[A-Z+*]\d{5}[A-W])
+      | IT\s?\d{11}
+      | LT\s?(?:\d{12}|\d{9})
+      | LU\s?\d{8}
+      | LV\s?\d{11}
+      | MT\s?\d{8}
+      | NL\s?\d{9}B\d{2}
+      | NO\s?\d{9}\s?MVA
+      | PL\s?\d{10}
+      | PT\s?\d{9}
+      | RO\s?\d{6,10}
+      | SE\s?\d{10}01
+      | SI\s?\d{8}
+      | SK\s?\d{10}
+      | XI\s?\d{3}\s?\d{4}\s?\d{2}
+    )\b"
+);
 
 /// Scores keywords; the first page, where titles sit, counts double.
 fn document_kind(lines: &[Line], profile: &Profile) -> DocumentKind {
@@ -175,7 +251,7 @@ fn invoice_kind(lines: &[Line], profile: &Profile) -> InvoiceKind {
 /// The first value matching `value` after a `label`: in the rest of the
 /// label's span, then in the spans to its right, then in the same column on
 /// the next three lines.
-fn labelled(lines: &[Line], label: &Regex, value: &Regex) -> Option<Field> {
+fn labelled(lines: &[Line], label: &Regex, value: Find<'_>) -> Option<Field> {
     for (index, line) in lines.iter().enumerate() {
         for (span_index, span) in line.spans.iter().enumerate() {
             let Some(found) = label.find(&span.text) else {
@@ -186,8 +262,8 @@ fn labelled(lines: &[Line], label: &Regex, value: &Regex) -> Option<Field> {
             let right = line.spans[span_index + 1..].iter().map(|span| span.text.as_str());
 
             for candidate in std::iter::once(rest).chain(right) {
-                if let Some(matched) = value.find(candidate) {
-                    return Some(field(line, matched.as_str()));
+                if let Some(range) = value(candidate) {
+                    return Some(field(line, &candidate[range]));
                 }
             }
 
@@ -215,10 +291,11 @@ fn labelled(lines: &[Line], label: &Regex, value: &Regex) -> Option<Field> {
     None
 }
 
-fn first_match(lines: &[Line], value: &Regex) -> Option<Field> {
-    lines
-        .iter()
-        .find_map(|line| value.find(&line.text()).map(|matched| field(line, matched.as_str())))
+fn first_match(lines: &[&Line], value: Find<'_>) -> Option<Field> {
+    lines.iter().find_map(|line| {
+        let text = line.text();
+        value(&text).map(|range| field(line, &text[range]))
+    })
 }
 
 fn field(line: &Line, value: &str) -> Field {
@@ -245,7 +322,7 @@ fn label_column(span: &Span, start: usize, end: usize) -> Span {
 
 /// The first `value` in `candidate` that starts in or after the column; a
 /// narrow candidate inside the column is searched whole.
-fn value_in_column(candidate: &Span, column: &Span, value: &Regex) -> Option<String> {
+fn value_in_column(candidate: &Span, column: &Span, value: Find<'_>) -> Option<String> {
     let chars = candidate.text.chars().count();
     let offset = if candidate.x >= column.x - 10.0 || candidate.width <= 0.0 {
         0
@@ -260,73 +337,39 @@ fn value_in_column(candidate: &Span, column: &Span, value: &Regex) -> Option<Str
         .nth(offset)
         .map_or(candidate.text.len(), |(index, _)| index);
 
-    value
-        .find(&candidate.text[byte_offset..])
-        .map(|matched| matched.as_str().to_owned())
+    let rest = &candidate.text[byte_offset..];
+
+    value(rest).map(|range| rest[range].to_owned())
 }
 
 fn overlaps(label: &Span, candidate: &Span) -> bool {
     candidate.x <= label.right() + 40.0 && candidate.right() >= label.x - 40.0
 }
 
-/// Dates become ISO `YYYY-MM-DD`; two-digit years are 20xx.
-fn normalize_date(mut field: Field) -> Field {
-    if let Some(captures) = DATE.captures(&field.value) {
-        let day: u32 = captures[1].parse().unwrap_or(0);
-        let month: u32 = captures[2].parse().unwrap_or(0);
-        let year: u32 = match captures[3].parse::<u32>().unwrap_or(0) {
-            year if year < 100 => 2000 + year,
-            year => year,
-        };
-
-        if (1..=31).contains(&day) && (1..=12).contains(&month) {
-            field.value = format!("{year:04}-{month:02}-{day:02}");
-        }
-    }
-
-    field
-}
-
-/// Amounts in cents, from a German `1.234,56`.
-fn cents(amount: &str) -> Option<i64> {
-    amount.replace(['.', ','], "").parse().ok()
-}
-
-fn decimal(cents: i64) -> String {
-    format!(
-        "{}{}.{:02}",
-        if cents < 0 { "-" } else { "" },
-        cents.abs() / 100,
-        cents.abs() % 100
-    )
-}
-
-fn amounts(lines: &[Line], profile: &Profile) -> Amounts {
+fn amounts(lines: &[Line], profile: &Profile, numbers: &NumberFormat) -> Amounts {
+    let currency = currency::detect(lines);
     let all: Vec<i64> = lines
         .iter()
-        .flat_map(|line| {
-            AMOUNT
-                .find_iter(&line.text())
-                .filter_map(|m| cents(m.as_str()))
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|line| &line.spans)
+        .flat_map(|span| numbers.amounts(&span.text).map(|(_, cents)| cents).collect::<Vec<_>>())
         .filter(|cents| *cents > 0)
         .collect();
 
     if let Some((net, tax, gross, rate)) = consistent_triple(&all) {
         return Amounts {
-            net: Some(decimal(net)),
-            tax: Some(decimal(tax)),
-            gross: Some(decimal(gross)),
+            net: Some(numbers::decimal(net)),
+            tax: Some(numbers::decimal(tax)),
+            gross: Some(numbers::decimal(gross)),
+            currency,
             tax_rate: Some(rate),
             consistent: true,
         };
     }
 
     let labelled_cents = |label: &Regex| {
-        labelled(lines, label, &AMOUNT)
-            .and_then(|field| cents(&field.value))
-            .map(decimal)
+        labelled(lines, label, &|text| numbers.find_amount(text))
+            .and_then(|field| numbers.whole_amount(&field.value))
+            .map(numbers::decimal)
     };
 
     Amounts {
@@ -334,6 +377,7 @@ fn amounts(lines: &[Line], profile: &Profile) -> Amounts {
         tax: None,
         // No largest-amount fallback: a wrong total is worse than none.
         gross: labelled_cents(&profile.labels.gross),
+        currency,
         tax_rate: None,
         consistent: false,
     }
@@ -407,7 +451,11 @@ fn vat_ids(lines: &[Line]) -> Vec<String> {
 
     for line in lines {
         for matched in VAT_ID.find_iter(&line.text()) {
-            let vat_id = matched.as_str().replace(' ', "");
+            let mut vat_id: String = matched.as_str().chars().filter(char::is_ascii_alphanumeric).collect();
+            // A Swiss number names its tax after the digits.
+            if vat_id.starts_with("CHE") {
+                vat_id.truncate(12);
+            }
 
             if !found.contains(&vat_id) {
                 found.push(vat_id);
@@ -465,6 +513,7 @@ mod tests {
                 net: Some("3250.00".to_owned()),
                 tax: Some("617.50".to_owned()),
                 gross: Some("3867.50".to_owned()),
+                currency: Some("EUR".to_owned()),
                 tax_rate: Some(19),
                 consistent: true,
             }
@@ -555,6 +604,108 @@ mod tests {
         let lines = lines(&[item(1, 50.0, 100.0, "IBAN DE88 3704 0044 0532 0130 00")]);
 
         assert!(extract(&lines).ibans.is_empty());
+    }
+
+    #[test]
+    fn reads_vat_ids_of_other_countries_as_printed() {
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "VAT Reg No: GB 674 4257 93"),
+            item(1, 50.0, 680.0, "UID: CHE-123.456.789 MWST"),
+            item(1, 50.0, 660.0, "BTW-nr: NL123456789B01"),
+            item(1, 50.0, 640.0, "TVA: FR 12 345 678 901"),
+            item(1, 50.0, 620.0, "IBAN: GB29 NWBK 6016 1331 9268 19"),
+        ]);
+
+        assert_eq!(
+            extract(&lines).vat_ids,
+            ["GB674425793", "CHE123456789", "NL123456789B01", "FR12345678901"]
+        );
+    }
+
+    #[test]
+    fn reads_totals_written_with_a_decimal_point() {
+        // An invoice from a country that writes `1,962.00`, with German labels.
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 50.0, 400.0, "Nettosumme: 1,962.00 €"),
+            item(1, 50.0, 385.0, "MwSt. 19%: 372.78 €"),
+            item(1, 50.0, 370.0, "Gesamtsumme: 2,334.78 €"),
+        ]);
+
+        let amounts = extract(&lines).amounts;
+
+        assert_eq!(amounts.net.as_deref(), Some("1962.00"));
+        assert_eq!(amounts.gross.as_deref(), Some("2334.78"));
+        assert_eq!(amounts.currency.as_deref(), Some("EUR"));
+        assert!(amounts.consistent);
+    }
+
+    #[test]
+    fn settles_slashed_issue_and_due_dates_by_their_order() {
+        // 09/03 and 08/04 are both valid either way; only day first puts the
+        // due date after the issue date.
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 50.0, 680.0, "Rechnungsdatum: 09/03/2026"),
+            item(1, 50.0, 660.0, "Zahlbar bis: 08/04/2026"),
+        ]);
+
+        let candidates = extract(&lines);
+
+        assert_eq!(candidates.issue_date.map(|f| f.value), Some("2026-03-09".to_owned()));
+        assert_eq!(candidates.due_date.map(|f| f.value), Some("2026-04-08".to_owned()));
+    }
+
+    #[test]
+    fn leaves_an_ambiguous_slashed_date_empty() {
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 50.0, 680.0, "Rechnungsdatum: 02/03/2026"),
+        ]);
+
+        assert_eq!(extract(&lines).issue_date, None);
+    }
+
+    #[test]
+    fn takes_no_due_date_for_an_unlabelled_issue_date() {
+        // The due date comes first in reading order; the issue date has no
+        // label the profile knows.
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 50.0, 680.0, "Zahlbar bis 08.10.2026"),
+            item(1, 400.0, 660.0, "Musterstadt, 08.09.2026"),
+        ]);
+
+        let candidates = extract(&lines);
+
+        assert_eq!(candidates.issue_date.map(|f| f.value), Some("2026-09-08".to_owned()));
+        assert_eq!(candidates.due_date.map(|f| f.value), Some("2026-10-08".to_owned()));
+    }
+
+    #[test]
+    fn reads_an_issue_date_with_a_written_month() {
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 400.0, 700.0, "Musterstadt, den 7. September 2026"),
+        ]);
+
+        assert_eq!(
+            extract(&lines).issue_date.map(|f| f.value),
+            Some("2026-09-07".to_owned())
+        );
+    }
+
+    #[test]
+    fn names_no_currency_for_a_bare_dollar_sign() {
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 50.0, 400.0, "Gesamtsumme: $346.50"),
+        ]);
+
+        let amounts = extract(&lines).amounts;
+
+        assert_eq!(amounts.gross.as_deref(), Some("346.50"));
+        assert_eq!(amounts.currency, None);
     }
 
     #[test]

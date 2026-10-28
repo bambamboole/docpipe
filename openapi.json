@@ -154,6 +154,7 @@
         "description": "The document's totals. Without a consistent triple, only labelled amounts\nare returned.",
         "required": [
           "consistent",
+          "currency",
           "gross",
           "net",
           "tax",
@@ -163,6 +164,13 @@
           "consistent": {
             "type": "boolean",
             "description": "Whether net + tax = gross was found on the document."
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ISO 4217 code of the currency the amounts are written in, when the\ndocument names one unambiguously next to its amounts."
           },
           "gross": {
             "type": [
@@ -322,7 +330,7 @@
       },
       "Candidates": {
         "type": "object",
-        "description": "Field candidates of a German invoice or quote, for a person to confirm. A\nfield that cannot be read with confidence is `null`.",
+        "description": "Field candidates of an invoice or quote, for a person to confirm. A\nfield that cannot be read with confidence is `null`.",
         "required": [
           "amounts",
           "document_kind",
@@ -425,7 +433,7 @@
             "items": {
               "type": "string"
             },
-            "description": "German and Austrian VAT IDs without spaces."
+            "description": "VAT identification numbers of EU countries, the United Kingdom,\nSwitzerland and Norway, without spaces, dots or dashes."
           }
         }
       },
