@@ -75,6 +75,12 @@ The seller is the company named with a legal form (`GmbH`, `GmbH & Co. KG`, `AG`
 
 OCR pages have no positions in the response; their lines are rebuilt from the OCR Markdown, table cells becoming columns, so labels still find their values. The OCR confidence stays high even on poor scans and is no quality gate: rely on the field checks (consistent amounts, IBAN check digits) instead.
 
+### Language profiles
+
+The words fields are read by live in language profiles, one TOML file per language in [`profiles/`](profiles), compiled into the binary: the labels of each field, the words that tell invoices, quotes and credit notes apart, the vocabulary of line items and the legal forms of companies. Everything else — the layout, amounts, dates, IBANs, e-invoices — does not depend on the language. German (`de`) is the only profile so far, and every document is read with it.
+
+To add a language, copy `profiles/de.toml`, translate its patterns and word lists, add the file to `SOURCES` in `src/profile.rs`, and add tests that build documents in that language and name the layouts they cover. A profile that fails to parse or has an invalid pattern fails `cargo test`.
+
 ## Authentication
 
 As in [pdf-ua-api](https://github.com/bambamboole/pdf-ua-api), docpipe only verifies tokens, it never issues them. `AUTH_MODE` has no default, so the service does not start until it names one of three modes:

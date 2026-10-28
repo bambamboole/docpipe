@@ -12,6 +12,7 @@ use crate::attachments::{self, EInvoice};
 use crate::candidates::{self, Candidates};
 use crate::layout::{self, Item, Line};
 use crate::ocr::{self, OcrReport, OcrSettings, OcrStatus};
+use crate::profile;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AnalyzeError {
@@ -220,7 +221,7 @@ fn analyze_pdf(bytes: &[u8], ocr_settings: &OcrSettings) -> Result<Analysis, Ana
             })
             .collect(),
         einvoice,
-        candidates: has_text.then(|| candidates::extract(&lines)),
+        candidates: has_text.then(|| candidates::extract(&lines, profile::fallback())),
         ocr: Some(report),
         processing_ms: 0,
     })

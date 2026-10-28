@@ -8,12 +8,10 @@
 //! A private customer has no legal form and is never a candidate.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
-
-use regex::Regex;
 
 use crate::candidates::Field;
 use crate::layout::Line;
+use crate::profile::Profile;
 
 /// Lines at the top of the first page that hold the sender line.
 const HEAD_LINES: usize = 8;
@@ -21,30 +19,8 @@ const HEAD_LINES: usize = 8;
 /// What a mention in the head counts, against one for any other mention.
 const HEAD_WEIGHT: usize = 3;
 
-static COMPANY: LazyLock<Regex> = LazyLock::new(|| {
-    // Up to six capitalised words, joined by `&`, `+` or `und`, then the legal
-    // form, optionally as a limited partnership (`GmbH & Co. KG`). A bare `KG`,
-    // `AG`, `SE` or `OHG` also abbreviates building terms (`KG` is the
-    // basement), so it only counts at the end of the name's part of the line.
-    Regex::new(
-        r"(?x)
-        \b\p{Lu}[\p{L}\d.'\-]*
-        (?:\s+(?:\p{Lu}[\p{L}\d.'\-]*|&|\+|und)){0,5}
-        \s+(?:
-            (?:GmbH|mbH|GbR|UG(?:\s\(haftungsbeschränkt\))?|e\.\s?K\.)
-            (?:\s*(?:&|\+|und)\s*Co\.?\s*(?:KG|OHG))?
-            (?:[\s,;:*|·]|$)
-          | (?:KG|AG|SE|OHG)\s*(?:[,;:*|·\-]|$)
-        )",
-    )
-    .expect("valid regex")
-});
-
-/// Words that introduce a company in running text rather than name it.
-static LEADING_WORDS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:(?:Firma|Fa\.|Die|Der|Den|Von|Bei)\s+)+").expect("valid regex"));
-
-pub fn extract(lines: &[Line]) -> Option<Field> {
+pub fn extract(lines: &[Line], profile: &Profile) -> Option<Field> {
+    let words = &profile.seller;
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut by_key: HashMap<String, usize> = HashMap::new();
 
@@ -56,8 +32,9 @@ pub fn extract(lines: &[Line]) -> Option<Field> {
             1
         };
 
-        for matched in COMPANY.find_iter(&text) {
-            let name = LEADING_WORDS
+        for matched in words.company.find_iter(&text) {
+            let name = words
+                .leading_words
                 .replace(
                     matched
                         .as_str()
@@ -116,6 +93,11 @@ mod tests {
     use super::*;
     use crate::layout::lines;
     use crate::layout::tests::item;
+    use crate::profile::tests::german;
+
+    fn extract(lines: &[Line]) -> Option<Field> {
+        super::extract(lines, german())
+    }
 
     fn seller(items: &[crate::layout::Item]) -> Option<String> {
         extract(&lines(items)).map(|field| field.value)

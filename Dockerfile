@@ -3,6 +3,7 @@ FROM rust:1.95-slim-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY profiles ./profiles
 RUN cargo build --release --locked
 
 ############################################
