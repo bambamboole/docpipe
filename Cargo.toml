@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 axum = "0.8"
-jsonwebtoken = "9"
+jsonwebtoken = "11"
 lopdf = "0.45"
 pdf-inspector = { version = "1.25", features = ["ocr"] }
 regex = "1"
