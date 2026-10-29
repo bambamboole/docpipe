@@ -1,4 +1,4 @@
-//! Line items of German quotes and invoices, read from reconstructed lines.
+//! Line items of quotes and invoices, read from reconstructed lines.
 //!
 //! A position starts with a line whose first span is a position number alone
 //! (`1.2`, `01.11.01.01`, `10073`), always in the same column. Its quantity

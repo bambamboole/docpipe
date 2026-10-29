@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>docpipe API</title>
+  <!-- The Lattice API reference, pinned by version and hash. -->
+  <link rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/@lattice-php/api-reference@0.78.0/dist-browser/api-reference.css"
+    integrity="sha384-Sq9sLyiXsfO2X9F4pujuf7pnx5a/X0l+/qx8nvvxLyGgYem6lPgfMTMDK7Iw/IAN"
+    crossorigin="anonymous">
+  <link rel="modulepreload"
+    href="https://cdn.jsdelivr.net/npm/@lattice-php/api-reference@0.78.0/dist-browser/api-reference.js"
+    integrity="sha384-waLpTrPy/CadwT75sXI3SuIV/F92sVcnkjUGMTI44Rwj9pL6vIO3I3CWT4tkIUZm"
+    crossorigin="anonymous">
+  <link rel="icon" href="data:,">
+  <style>
+    body { margin: 0; }
+    #reference { max-width: 80rem; margin: 0 auto; padding: 2rem 1rem; }
+  </style>
+</head>
+<body>
+  <div id="reference"></div>
+  <script type="module">
+    import { mount } from "https://cdn.jsdelivr.net/npm/@lattice-php/api-reference@0.78.0/dist-browser/api-reference.js";
+
+    const dark = window.matchMedia("(prefers-color-scheme: dark)");
+    const theme = () => document.documentElement.classList.toggle("dark", dark.matches);
+    theme();
+    dark.addEventListener("change", theme);
+
+    // The playground sends requests to the instance that serves this page,
+    // also behind a path prefix.
+    const spec = await (await fetch("openapi.json")).json();
+    const base = new URL(".", window.location.href).href.replace(/\/$/, "");
+    spec.servers = [{ url: base, description: "This instance" }];
+
+    mount(document.getElementById("reference"), { spec });
+  </script>
+</body>
+</html>

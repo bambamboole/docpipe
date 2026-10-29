@@ -1,6 +1,6 @@
 //! docpipe analyses incoming documents: it classifies PDFs, extracts their
 //! text with positions, finds embedded e-invoice XML and proposes the fields
-//! of German invoices and quotes.
+//! of invoices and quotes with the words of a language profile.
 
 pub mod analyze;
 pub mod attachments;

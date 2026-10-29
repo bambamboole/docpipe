@@ -5,7 +5,8 @@
 //! bearer token as [`Auth`] demands: a JWT, an API key, or none.
 //!
 //! `GET /openapi.json` describes the API as OpenAPI 3.1; [`openapi`] returns
-//! the same document, which `openapi.json` in the repository holds.
+//! the same document, which `openapi.json` in the repository holds. `GET /docs`
+//! renders it with the Lattice API reference.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +15,7 @@ use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use serde::Serialize;
 use tokio::sync::Semaphore;
@@ -49,7 +50,7 @@ struct AppState {
 #[openapi(
     info(
         title = "docpipe",
-        description = "Analyses German invoices and quotes: PDF classification, the text of every page, OCR of \
+        description = "Analyses invoices and quotes in German and English: PDF classification, the text of every page, OCR of \
             scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to \
             confirm. The service is stateless and keeps nothing it receives."
     ),
@@ -121,6 +122,10 @@ fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
     (router, openapi)
 }
 
+/// The API reference page; it loads the Lattice API reference from a CDN,
+/// pinned by version and hash, and renders `/openapi.json`.
+const DOCS: &str = include_str!("docs.html");
+
 pub fn router(config: Config) -> Router {
     let max_body_bytes = config.max_body_bytes;
     let analyses = Arc::new(Semaphore::new(config.max_concurrent));
@@ -132,6 +137,7 @@ pub fn router(config: Config) -> Router {
             "/openapi.json",
             get(move || async move { axum::Json(Arc::clone(&openapi)) }),
         )
+        .route("/docs", get(|| async { Html(DOCS) }))
         .layer(DefaultBodyLimit::max(max_body_bytes))
         // A 5xx is already logged where it arises, as an error only when it
         // needs attention; at ERROR this would open a second Sentry issue.
@@ -401,6 +407,24 @@ mod tests {
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(json["error"], "timeout");
+    }
+
+    #[tokio::test]
+    async fn serves_its_api_reference_without_a_token() {
+        let response = app(Auth::ApiKey("secret".to_owned()))
+            .oneshot(Request::get("/docs").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html")
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&bytes).contains("fetch(\"openapi.json\")"));
     }
 
     #[tokio::test]

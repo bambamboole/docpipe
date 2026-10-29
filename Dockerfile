@@ -50,7 +50,7 @@ RUN base="https://github.com/GreatV/oar-ocr/releases/download/v0.7.0" \
 FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.source="https://github.com/bambamboole/docpipe" \
-      org.opencontainers.image.description="Document analysis service for German invoices and quotes" \
+      org.opencontainers.image.description="Document analysis service for invoices and quotes" \
       org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update -y \
