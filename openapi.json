@@ -338,6 +338,7 @@
           "issue_date",
           "line_items",
           "number",
+          "profile",
           "seller_name",
           "valid_until",
           "vat_ids"
@@ -403,6 +404,10 @@
                 "type": "null"
               }
             ]
+          },
+          "profile": {
+            "type": "string",
+            "description": "The language profile the document was read with, detected from its\nwords, e.g. `de` or `en`."
           },
           "seller_name": {
             "oneOf": [

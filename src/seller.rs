@@ -5,12 +5,15 @@
 //! address window, in the page footer and in its terms. Every company name
 //! with a legal form is a candidate; the one named most often wins, and the
 //! first lines of the first page, where the sender line sits, count extra.
-//! A private customer has no legal form and is never a candidate.
+//! A private customer has no legal form and is never a candidate. Names are
+//! read within one text run, so a title beside the sender line, such as
+//! `INVOICE`, is no part of the name. A name under the heading of the
+//! recipient's address (`Bill To`), in its column, is the customer's.
 
 use std::collections::HashMap;
 
 use crate::candidates::Field;
-use crate::layout::Line;
+use crate::layout::{Line, Span};
 use crate::profile::Profile;
 
 /// Lines at the top of the first page that hold the sender line.
@@ -19,10 +22,36 @@ const HEAD_LINES: usize = 8;
 /// What a mention in the head counts, against one for any other mention.
 const HEAD_WEIGHT: usize = 3;
 
+/// The lines under a recipient heading that hold the recipient's name.
+const RECIPIENT_LINES: usize = 3;
+
+/// How far, in PDF points, a name may sit from the column of its heading.
+const RECIPIENT_COLUMN: f32 = 20.0;
+
 pub fn extract(lines: &[Line], profile: &Profile) -> Option<Field> {
     let words = &profile.seller;
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut by_key: HashMap<String, usize> = HashMap::new();
+    // The page, line index and x of each recipient heading.
+    let headings: Vec<(u32, usize, f32)> = lines
+        .iter()
+        .enumerate()
+        .flat_map(|(index, line)| {
+            line.spans
+                .iter()
+                .filter(|span| words.recipient.is_match(&span.text))
+                .map(move |span| (line.page, index, span.x))
+        })
+        .collect();
+    let is_recipient = |index: usize, line: &Line, span: &Span| {
+        words.recipient.is_match(&span.text)
+            || headings.iter().any(|&(page, heading, x)| {
+                page == line.page
+                    && heading < index
+                    && index - heading <= RECIPIENT_LINES
+                    && (span.x - x).abs() <= RECIPIENT_COLUMN
+            })
+    };
 
     for (index, line) in lines.iter().enumerate() {
         let text = line.text();
@@ -32,7 +61,11 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Option<Field> {
             1
         };
 
-        for matched in words.company.find_iter(&text) {
+        // Per span: a legal form that counts only at the end of a name ends
+        // the span when a title sits to its right on the same line.
+        let spans = line.spans.iter().filter(|span| !is_recipient(index, line, span));
+
+        for matched in spans.flat_map(|span| words.company.find_iter(&span.text)) {
             let name = words
                 .leading_words
                 .replace(
@@ -93,7 +126,7 @@ mod tests {
     use super::*;
     use crate::layout::lines;
     use crate::layout::tests::item;
-    use crate::profile::tests::german;
+    use crate::profile::tests::{english, german};
 
     fn extract(lines: &[Line]) -> Option<Field> {
         super::extract(lines, german())
@@ -162,6 +195,58 @@ mod tests {
             ]),
             Some("Beispielhaus Keller GmbH & Co. KG".to_owned()),
         );
+    }
+
+    #[test]
+    fn reads_english_legal_forms_after_a_document_title() {
+        let english = |items: &[crate::layout::Item]| super::extract(&lines(items), english()).map(|field| field.value);
+
+        assert_eq!(
+            english(&[
+                item(1, 40.0, 800.0, "TAX INVOICE Harbourside Fasteners (Pty) Ltd"),
+                item(1, 40.0, 780.0, "12 Quay Street, Cape Town"),
+            ]),
+            Some("Harbourside Fasteners (Pty) Ltd".to_owned()),
+        );
+        assert_eq!(
+            english(&[item(1, 40.0, 800.0, "Riverbend Joinery Limited")]),
+            Some("Riverbend Joinery Limited".to_owned()),
+        );
+        assert_eq!(
+            english(&[item(1, 40.0, 800.0, "Copperleaf Analytics Inc")]),
+            Some("Copperleaf Analytics Inc".to_owned()),
+        );
+    }
+
+    #[test]
+    fn ends_a_name_at_its_run_when_a_title_sits_beside_it() {
+        let lines = lines(&[
+            item(1, 40.0, 800.0, "Copperleaf Analytics Inc"),
+            item(1, 420.0, 800.0, "INVOICE"),
+            item(1, 40.0, 600.0, "Bill To"),
+            item(1, 40.0, 585.0, "Harrow & Finch LLP"),
+        ]);
+
+        assert_eq!(
+            super::extract(&lines, english()).map(|field| field.value),
+            Some("Copperleaf Analytics Inc".to_owned())
+        );
+    }
+
+    #[test]
+    fn takes_no_name_under_a_recipient_heading() {
+        // The sender has no legal form; the customers named twice do.
+        let lines = lines(&[
+            item(1, 40.0, 800.0, "Fernhill Bakery"),
+            item(1, 420.0, 800.0, "INVOICE"),
+            item(1, 40.0, 700.0, "BILL TO"),
+            item(1, 300.0, 700.0, "SHIP TO"),
+            item(1, 40.0, 685.0, "Harrow & Finch LLP"),
+            item(1, 300.0, 685.0, "Harrow & Finch LLP"),
+            item(1, 40.0, 600.0, "Customer: Lindqvist Holdings Ltd"),
+        ]);
+
+        assert_eq!(super::extract(&lines, english()), None);
     }
 
     #[test]

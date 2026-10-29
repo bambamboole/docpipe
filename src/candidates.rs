@@ -86,6 +86,9 @@ pub struct TaxLine {
 /// field that cannot be read with confidence is `null`.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct Candidates {
+    /// The language profile the document was read with, detected from its
+    /// words, e.g. `de` or `en`.
+    pub profile: String,
     pub document_kind: DocumentKind,
     /// Only for invoices.
     pub invoice_kind: Option<InvoiceKind>,
@@ -144,6 +147,7 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
         .collect();
 
     Candidates {
+        profile: profile.id.clone(),
         document_kind,
         invoice_kind: (document_kind == DocumentKind::Invoice).then(|| invoice_kind(lines, profile)),
         number: labelled(lines, number_label, &|text| {
@@ -390,17 +394,21 @@ fn amounts(lines: &[Line], profile: &Profile, numbers: &NumberFormat, breakdown:
         };
     }
 
+    // Which currency a labelled amount is in is open when there are several.
     let labelled_cents = |label: &Regex| {
         labelled(lines, label, &|text| numbers.find_amount(text))
             .and_then(|field| numbers.whole_amount(&field.value))
-            .map(numbers::decimal)
+            .filter(|_| !currency::several(lines))
     };
+    // No largest-amount fallback: a wrong total is worse than none.
+    let gross = labelled_cents(&profile.labels.gross);
+    // A subtotal that is not below the total was taken after tax.
+    let net = labelled_cents(&profile.labels.net).filter(|net| gross.is_none_or(|gross| *net < gross));
 
     Amounts {
-        net: labelled_cents(&profile.labels.net),
+        net: net.map(numbers::decimal),
         tax: None,
-        // No largest-amount fallback: a wrong total is worse than none.
-        gross: labelled_cents(&profile.labels.gross),
+        gross: gross.map(numbers::decimal),
         currency,
         tax_lines: Vec::new(),
         consistent: false,
@@ -469,7 +477,7 @@ mod tests {
     use super::*;
     use crate::layout::lines;
     use crate::layout::tests::item;
-    use crate::profile::tests::german;
+    use crate::profile::tests::{english, german};
 
     fn extract(lines: &[Line]) -> Candidates {
         super::extract(lines, german())
@@ -754,6 +762,101 @@ mod tests {
 
         assert_eq!(amounts.gross.as_deref(), Some("346.50"));
         assert_eq!(amounts.currency, None);
+    }
+
+    #[test]
+    fn reads_an_english_invoice() {
+        // Header fields in a right-hand column, slashed dates, totals at 20 %.
+        let lines = lines(&[
+            item(1, 40.0, 800.0, "Riverbend Joinery Limited"),
+            item(1, 420.0, 800.0, "TAX INVOICE"),
+            item(1, 330.0, 770.0, "Invoice No.:"),
+            item(1, 450.0, 770.0, "RJ-20417"),
+            item(1, 330.0, 755.0, "Date:"),
+            item(1, 450.0, 755.0, "14/09/2026"),
+            item(1, 330.0, 740.0, "Due Date:"),
+            item(1, 450.0, 740.0, "14/10/2026"),
+            item(1, 40.0, 700.0, "Bill To"),
+            item(1, 40.0, 400.0, "Oak worktop, fitted"),
+            item(1, 450.0, 400.0, "1,250.00"),
+            item(1, 330.0, 300.0, "Subtotal"),
+            item(1, 450.0, 300.0, "£1,250.00"),
+            item(1, 330.0, 285.0, "VAT 20%"),
+            item(1, 450.0, 285.0, "£250.00"),
+            item(1, 330.0, 270.0, "TOTAL"),
+            item(1, 450.0, 270.0, "£1,500.00"),
+        ]);
+
+        let candidates = super::extract(&lines, english());
+
+        assert_eq!(candidates.profile, "en");
+        assert_eq!(candidates.document_kind, DocumentKind::Invoice);
+        assert_eq!(candidates.number.map(|f| f.value), Some("RJ-20417".to_owned()));
+        assert_eq!(candidates.issue_date.map(|f| f.value), Some("2026-09-14".to_owned()));
+        assert_eq!(candidates.due_date.map(|f| f.value), Some("2026-10-14".to_owned()));
+        assert_eq!(candidates.amounts.gross.as_deref(), Some("1500.00"));
+        assert_eq!(candidates.amounts.currency.as_deref(), Some("GBP"));
+        assert_eq!(
+            candidates.seller_name.map(|f| f.value),
+            Some("Riverbend Joinery Limited".to_owned())
+        );
+    }
+
+    #[test]
+    fn reads_an_english_date_with_an_ordinal_day() {
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Quotation No: Q-311"),
+            item(1, 50.0, 680.0, "Date: 3rd March 2026"),
+            item(1, 50.0, 660.0, "Valid until: March 31st, 2026"),
+        ]);
+
+        let candidates = super::extract(&lines, english());
+
+        assert_eq!(candidates.document_kind, DocumentKind::Quote);
+        assert_eq!(candidates.number.map(|f| f.value), Some("Q-311".to_owned()));
+        assert_eq!(candidates.issue_date.map(|f| f.value), Some("2026-03-03".to_owned()));
+        assert_eq!(candidates.valid_until.map(|f| f.value), Some("2026-03-31".to_owned()));
+    }
+
+    #[test]
+    fn takes_no_subtotal_that_includes_the_tax() {
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Invoice"),
+            item(1, 330.0, 300.0, "Subtotal"),
+            item(1, 450.0, 300.0, "2,300.00"),
+            item(1, 330.0, 285.0, "Amount Due"),
+            item(1, 450.0, 285.0, "2,300.00"),
+        ]);
+
+        let amounts = super::extract(&lines, english()).amounts;
+
+        assert_eq!(amounts.net, None);
+        assert_eq!(amounts.gross.as_deref(), Some("2300.00"));
+    }
+
+    #[test]
+    fn reads_no_labelled_totals_in_two_currencies() {
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Invoice"),
+            item(1, 330.0, 300.0, "Subtotal US$ 180.00"),
+            item(1, 330.0, 285.0, "Amount Due ZAR 3,321.22"),
+        ]);
+
+        let amounts = super::extract(&lines, english()).amounts;
+
+        assert_eq!((amounts.net, amounts.gross), (None, None));
+    }
+
+    #[test]
+    fn takes_no_line_item_column_for_the_total() {
+        // `Total` heads the amount column; only a labelled total counts.
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Invoice"),
+            item(1, 450.0, 600.0, "Total"),
+            item(1, 450.0, 585.0, "120.00"),
+        ]);
+
+        assert_eq!(super::extract(&lines, english()).amounts.gross, None);
     }
 
     #[test]
