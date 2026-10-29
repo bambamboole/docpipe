@@ -145,7 +145,7 @@ AUTH_MODE=none cargo run --release
 curl --data-binary @invoice.pdf http://localhost:8080/v1/analyze
 ```
 
-Never commit real invoices: they contain personal data. Tests build their PDFs in code.
+Never commit real invoices: they contain personal data. Most tests build their PDFs in code; `tests/fixtures/` contains the fictional [Invoice Extraction Benchmark v1](tests/fixtures/README.md) PDF subset for integration tests.
 
 ## Installation
 
