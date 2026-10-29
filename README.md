@@ -12,6 +12,12 @@ Text extraction and OCR build on [pdf-inspector](https://github.com/firecrawl/pd
 
 The service is stateless and keeps nothing it receives.
 
+## Quick start
+
+```sh
+docker run -p 8080:8080 -e AUTH_MODE=none ghcr.io/bambamboole/docpipe:latest
+```
+
 ## API
 
 [`openapi.json`](openapi.json) describes the API as OpenAPI 3.1, and every instance serves it at `GET /openapi.json` without a token. `GET /docs` renders it with the [Lattice API reference](https://www.npmjs.com/package/@lattice-php/api-reference), whose playground sends requests to the instance itself; the page loads the reference from jsDelivr, pinned by version and hash. `cargo run -- openapi > openapi.json` regenerates it from the code; a test fails when the committed document is stale.
