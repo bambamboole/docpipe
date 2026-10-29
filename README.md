@@ -151,7 +151,7 @@ docker run -p 8080:8080 -e AUTH_MODE=api_key -e API_KEY=change-me ghcr.io/bambam
 
 The image is built for linux/amd64 and contains everything OCR needs. The binaries (Linux x86_64 and arm64, macOS arm64) bring no OCR runtime: set `PDFIUM_LIB_PATH` and `ORT_DYLIB_PATH` to a PDFium and an ONNX Runtime library, or switch OCR off with `DOCPIPE_OCR=off`. The [Dockerfile](Dockerfile) names the tested versions.
 
-Releases are cut by pushing a tag `v<version>` that matches the version in `Cargo.toml`.
+Releases come from [release-please](https://github.com/googleapis/release-please): it keeps a release pull request open that bumps the version in `Cargo.toml` and writes `CHANGELOG.md` from the conventional commits on `main`. Merging it tags `v<version>` and creates the release, and the tag builds the binaries and the image. A `feat!` or `BREAKING CHANGE` raises the minor version while docpipe is below 1.0.
 
 ## Deployment
 

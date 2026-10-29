@@ -1,7 +1,8 @@
 name: Release
 
-# Pushing a tag such as v0.2.0 builds the binaries, publishes them on a GitHub
-# release and pushes the image to ghcr.io/<owner>/docpipe.
+# The tag release-please creates when its release pull request is merged, such
+# as v0.2.0, builds the binaries, attaches them to the GitHub release
+# release-please created and pushes the image to ghcr.io/<owner>/docpipe.
 on:
   push:
     tags:
@@ -63,7 +64,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: GitHub release
+    name: Release assets
     needs: binaries
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -75,11 +76,11 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Create the release
+      - name: Attach the binaries to the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag
+        run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
 
   image:
     name: Container image
