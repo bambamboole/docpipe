@@ -142,7 +142,7 @@ Each [release](https://github.com/bambamboole/docpipe/releases) publishes a cont
 docker run -p 8080:8080 -e AUTH_MODE=api_key -e API_KEY=change-me ghcr.io/bambamboole/docpipe:latest
 ```
 
-The image is built for linux/amd64 and contains everything OCR needs. The binaries (Linux x86_64 and arm64, macOS arm64) bring no OCR runtime: set `PDFIUM_LIB_PATH` and `ORT_DYLIB_PATH` to a PDFium and an ONNX Runtime library, or switch OCR off with `DOCPIPE_OCR=off`. The [Dockerfile](Dockerfile) names the tested versions.
+The image is built for linux/amd64 and linux/arm64 and contains everything OCR needs. The binaries (Linux x86_64 and arm64, macOS arm64) bring no OCR runtime: set `PDFIUM_LIB_PATH` and `ORT_DYLIB_PATH` to a PDFium and an ONNX Runtime library, or switch OCR off with `DOCPIPE_OCR=off`. The [Dockerfile](Dockerfile) names the tested versions.
 
 Releases are cut by pushing a tag `v<version>` that matches the version in `Cargo.toml`.
 
@@ -150,7 +150,7 @@ Releases are cut by pushing a tag `v<version>` that matches the version in `Carg
 
 `compose-production.yml` runs the image without a public port, for services in the same Docker network, with JWT authentication.
 
-The image ships PDFium `native-v7988`, ONNX Runtime 1.27.0 and the PP-OCRv6 Small models (`oar-ocr-v0.7.0`), each verified by SHA-256 at build time; it never downloads anything at runtime. It is built for linux/amd64, the platform pdf-inspector's OCR path is tested on.
+The image ships PDFium `native-v7988`, ONNX Runtime 1.27.0 and the PP-OCRv6 Small models (`oar-ocr-v0.7.0`), each verified by SHA-256 at build time; it never downloads anything at runtime. CI runs the OCR corpus on native amd64 and arm64 Docker runners.
 
 After OCR, ONNX Runtime keeps its memory pools: in production the container peaked at 1.12 GiB and stayed at 1.1 GiB (1.2 MiB idle before the first OCR). OCR runs one document at a time, so `compose-production.yml` limits the container to 1.5 GiB.
 

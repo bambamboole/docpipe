@@ -48,12 +48,23 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
 
   docker:
-    name: Docker image
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: Docker image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - run: docker build -t docpipe .
+      - run: docker build --platform ${{ matrix.platform }} -t docpipe .
+
+      - run: docker build --platform ${{ matrix.platform }} --target ocr-test -t docpipe-ocr-test .

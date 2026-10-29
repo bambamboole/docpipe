@@ -1,3 +1,4 @@
 target
 .git
 *.pdf
+!tests/fixtures/**/*.pdf
