@@ -42,14 +42,18 @@ The answer is JSON:
     "issue_date": { "value": "2026-09-07", "page": 1, "line": "…" },
     "due_date": { "value": "2026-09-17", "page": 2, "line": "…" },
     "valid_until": null,
-    "amounts": { "net": "3250.00", "tax": "617.50", "gross": "3867.50", "currency": "EUR", "tax_rate": 19, "consistent": true },
+    "amounts": {
+      "net": "3250.00", "tax": "617.50", "gross": "3867.50", "currency": "EUR",
+      "tax_lines": [{ "rate": "19", "net": "3250.00", "tax": "617.50" }],
+      "consistent": true
+    },
     "ibans": ["DE89370400440532013000"],
     "vat_ids": ["DE123456789"],
     "seller_name": { "value": "Musterbau GmbH & Co. KG", "page": 1, "line": "Musterbau GmbH & Co. KG · Hauptstr. 1 · 12345 Musterstadt" },
     "line_items": [{
       "position": "1.2", "description": "Kran vorhalten …",
       "quantity": "3", "unit": "Wochen", "unit_price": "410.00", "total": "1230.00",
-      "optional": false, "section": "1. Baustelleneinrichtung", "page": 2
+      "tax_rate": null, "optional": false, "section": "1. Baustelleneinrichtung", "page": 2
     }]
   },
   "ocr": {
@@ -67,11 +71,11 @@ Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, 
 
 ### How fields are read
 
-Lines are rebuilt from pdf-inspector's positioned text runs, keeping each run's horizontal position. A value is looked up after its label in the same run, then to the right on the same line, then in the label's column on the next three lines; when several labels share one run, as in a table header, the label's column is estimated from its position in the run. Amounts prefer a consistent triple — net and VAT at 19 % or 7 % that add up to a gross amount on the document — which also covers layouts whose labels and values sit in separate cells. Without such a triple, only labelled amounts are returned. IBANs are checked with their ISO 13616 check digits; VAT identification numbers are read in the formats of the EU countries, the United Kingdom, Switzerland and Norway.
+Lines are rebuilt from pdf-inspector's positioned text runs, keeping each run's horizontal position. A value is looked up after its label in the same run, then to the right on the same line, then in the label's column on the next three lines; when several labels share one run, as in a table header, the label's column is estimated from its position in the run. Amounts prefer tax lines that add up: for each tax rate the document prints (`19 %`, `7,5%`, `Sales Tax (8.625%)`), a net amount and its tax at that rate. Together, the net and tax amounts must sum to a gross amount on the document. No rate is assumed from a country, so a document that prints no rate has no tax lines. With several rates, the total net or the total tax must be printed too. This also covers layouts whose labels and values sit in separate cells. Without such tax lines, only labelled amounts are returned. IBANs are checked with their ISO 13616 check digits; VAT identification numbers are read in the formats of the EU countries, the United Kingdom, Switzerland and Norway.
 
 Numbers and dates are read in the format the document uses. Whether amounts carry a decimal comma (`1.234,56`, `1 234,56`) or a decimal point (`1,234.56`, `1'234.56`) is decided by the amounts with two decimals on the document; only when they do not tell, the language profile's mark decides. ISO dates, dotted dates (day first) and dates with a written month are unambiguous. A date with slashes takes its order from a date on the same document whose day exceeds 12; otherwise an issue and a due date take the order that puts the due date after the issue date, and when both orders do, or a date stands alone, it stays empty. The currency is the one ISO 4217 code or unambiguous symbol (`€`, `£`, `US$`) written next to the document's numbers; a bare `$`, or two currencies on one document, leave it empty.
 
-Line items start at a line whose first span is a position number alone (`1.2`, `01.11.01.01`, `10073`) in the column of the first one. The quantity is a span of a number and a unit, or a lump-sum word (`pauschal`, `psch`), on the position's first or last line; the amounts to its right are the unit price and the total, a single one the total. Following lines in the text's column belong to the position; header and footer lines repeated on several pages, carried-over subtotals and title sums are skipped. Text between positions names their section, and a section such as `Eventualpositionen` or `Optionale Positionen (nicht im Basispreis enthalten)`, or a marker such as `Bedarf`, makes its positions optional. A document with fewer than two positions has none.
+Line items start at a line whose first span is a position number alone (`1.2`, `01.11.01.01`, `10073`) in the column of the first one. The quantity is a span of a number and a unit, or a lump-sum word (`pauschal`, `psch`), on the position's first or last line; the amounts to its right are the unit price and the total, a single one the total. Following lines in the text's column belong to the position; header and footer lines repeated on several pages, carried-over subtotals and title sums are skipped. Text between positions names their section, and a section such as `Eventualpositionen` or `Optionale Positionen (nicht im Basispreis enthalten)`, or a marker such as `Bedarf`, makes its positions optional. A rate in a span of its own on a position (`19 %`) is its tax rate when it is the rate of one of the document's tax lines; a percentage they do not confirm, such as a discount, is not. A document with fewer than two positions has none.
 
 The seller is the company named with a legal form (`GmbH`, `GmbH & Co. KG`, `AG`, `e. K.`, …) most often on the document, from the sender line, the page footers and the terms; a name in the first lines of the first page counts three times. A bare `KG`, `AG`, `SE` or `OHG` only counts at the end of a name, since `KG` also means the basement. A private sender has no legal form, so the field stays empty.
 

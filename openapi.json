@@ -151,19 +151,19 @@
     "schemas": {
       "Amounts": {
         "type": "object",
-        "description": "The document's totals. Without a consistent triple, only labelled amounts\nare returned.",
+        "description": "The document's totals. Without tax lines that add up to a gross amount,\nonly labelled amounts are returned.",
         "required": [
           "consistent",
           "currency",
           "gross",
           "net",
           "tax",
-          "tax_rate"
+          "tax_lines"
         ],
         "properties": {
           "consistent": {
             "type": "boolean",
-            "description": "Whether net + tax = gross was found on the document."
+            "description": "Whether the tax lines add up to the gross amount on the document."
           },
           "currency": {
             "type": [
@@ -191,14 +191,12 @@
               "null"
             ]
           },
-          "tax_rate": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int32",
-            "description": "VAT rate in percent, e.g. `19`, when net and tax add up to gross.",
-            "minimum": 0
+          "tax_lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaxLine"
+            },
+            "description": "The net and tax amount per tax rate, ordered by rate. Only rates the\ndocument prints are used."
           }
         }
       },
@@ -561,6 +559,7 @@
           "position",
           "quantity",
           "section",
+          "tax_rate",
           "total",
           "unit",
           "unit_price"
@@ -597,6 +596,13 @@
               "null"
             ],
             "description": "The heading of the title or group the position belongs to."
+          },
+          "tax_rate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tax rate in percent printed on the position, e.g. `19` or `7.5`,\nwhen it is one of the rates of the document's tax lines."
           },
           "total": {
             "type": [
@@ -746,6 +752,28 @@
           "image_based",
           "mixed"
         ]
+      },
+      "TaxLine": {
+        "type": "object",
+        "description": "The net and tax amount of one tax rate.",
+        "required": [
+          "net",
+          "rate",
+          "tax"
+        ],
+        "properties": {
+          "net": {
+            "type": "string",
+            "description": "Decimal strings with a dot and two fraction digits."
+          },
+          "rate": {
+            "type": "string",
+            "description": "The rate in percent as printed, e.g. `19`, `7.5` or `8.1`."
+          },
+          "tax": {
+            "type": "string"
+          }
+        }
       },
       "TextSource": {
         "type": "string",

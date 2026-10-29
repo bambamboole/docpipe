@@ -40,14 +40,16 @@ struct Patterns {
 impl Patterns {
     /// `thousands` separates groups of three digits; `decimal` the decimals.
     fn new(thousands: &str, decimal: &str) -> Self {
-        let amount = format!(r"-?\b(?:\d{{1,3}}(?:[{thousands}]\d{{3}})+|\d+){decimal}\d{{2}}\b");
+        let amount = format!(r"-?(?:\d{{1,3}}(?:[{thousands}]\d{{3}})+|\d+){decimal}\d{{2}}\b");
         let number = format!(r"-?\d{{1,3}}(?:[{thousands}]\d{{3}})+(?:{decimal}\d+)?|-?\d+(?:{decimal}\d+)?");
         let currency = currency::affix_pattern();
 
         Self {
             whole_amount: Regex::new(&format!(r"^(?:{currency})?\s?({amount})\s?(?:{currency})?$"))
                 .expect("valid regex"),
-            amount: Regex::new(&amount).expect("valid regex"),
+            // Not inside a longer number; a letter may precede, as the `R` of
+            // `R10 208.07`.
+            amount: Regex::new(&format!(r"(?:^|\D)({amount})")).expect("valid regex"),
             quantity: Regex::new(&format!(r"^({number})\s*(\p{{L}}[\p{{L}}²³./]{{0,11}})$")).expect("valid regex"),
         }
     }
@@ -100,7 +102,8 @@ impl NumberFormat {
     pub fn amounts<'t>(&self, text: &'t str) -> impl Iterator<Item = (Range<usize>, i64)> + 't {
         self.patterns()
             .amount
-            .find_iter(text)
+            .captures_iter(text)
+            .filter_map(|captures| captures.get(1))
             .filter(|found| standalone(text, found.range()))
             .filter_map(|found| Some((found.range(), cents(found.as_str())?)))
     }
@@ -202,6 +205,7 @@ mod tests {
         assert_eq!(cents_in(point(), "CHF 1'234.50"), [123450]);
         assert_eq!(cents_in(comma(), "8\u{202f}672,10 €"), [867210]);
         assert_eq!(cents_in(point(), "TOTAL NAD 53 625.87"), [5362587]);
+        assert_eq!(cents_in(point(), "Subtotal R10 208.07"), [1020807]);
         assert_eq!(cents_in(comma(), "Gutschrift -50,00"), [-5000]);
     }
 
