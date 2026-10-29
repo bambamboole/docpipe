@@ -28,7 +28,7 @@ utoipa = "6"
 utoipa-axum = "0.3"
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.23"
 http-body-util = "0.1"
 rand = "0.8"
 rsa = "0.9"
