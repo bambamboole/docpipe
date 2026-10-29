@@ -1,4 +1,6 @@
 /target
 *.pdf
 !tests/fixtures/*.pdf
+!tests/fixtures/**/*.pdf
 .idea/
+/benchmark-data/

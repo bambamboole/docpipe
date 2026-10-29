@@ -82,14 +82,23 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
 
-  image:
-    name: Container image
+  image_arch:
+    name: Container image (${{ matrix.arch }})
     needs: binaries
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -101,15 +110,41 @@ jobs:
           REVISION: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
           TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           version="${TAG#v}"
           echo "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
           docker build \
+            --platform "$PLATFORM" \
             --label "org.opencontainers.image.version=$version" \
             --label "org.opencontainers.image.revision=$REVISION" \
+            --tag "$image:$version-$ARCH" \
+            .
+          docker push "$image:$version-$ARCH"
+
+  image_manifest:
+    name: Multi-arch container image
+    needs: image_arch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Publish amd64 and arm64 tags
+        env:
+          TAG: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${TAG#v}"
+          echo "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          docker buildx imagetools create \
             --tag "$image:$version" \
             --tag "$image:${version%.*}" \
             --tag "$image:latest" \
-            .
-          docker push --all-tags "$image"
+            "$image:$version-amd64" "$image:$version-arm64"
+          docker buildx imagetools inspect "$image:$version"
