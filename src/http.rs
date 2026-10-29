@@ -49,7 +49,7 @@ struct AppState {
 #[openapi(
     info(
         title = "docpipe",
-        description = "Analyses German invoices and quotes: PDF classification, the text of every page, OCR of \
+        description = "Analyses invoices and quotes in German and English: PDF classification, the text of every page, OCR of \
             scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to \
             confirm. The service is stateless and keeps nothing it receives."
     ),

@@ -2,12 +2,12 @@
   "openapi": "3.1.0",
   "info": {
     "title": "docpipe",
-    "description": "Analyses German invoices and quotes: PDF classification, the text of every page, OCR of scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to confirm. The service is stateless and keeps nothing it receives.",
+    "description": "Analyses invoices and quotes in German and English: PDF classification, the text of every page, OCR of scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to confirm. The service is stateless and keeps nothing it receives.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "servers": [
     {

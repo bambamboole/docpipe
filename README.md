@@ -1,12 +1,12 @@
 # docpipe
 
-A document analysis service for German invoices and quotes. It takes an incoming document and returns what a person needs to file it:
+A document analysis service for invoices and quotes, read in German and English and open to more languages through [language profiles](#language-profiles). It takes an incoming document and returns what a person needs to file it:
 
 - the PDF's classification (text-based, scanned, image-based, mixed) and the pages that need OCR,
 - the text of every page, line by line, and its Markdown — from the text layer, or from OCR for scanned pages,
 - embedded files, and the ZUGFeRD/Factur-X or XRechnung XML among them, returned as is,
-- field candidates of German invoices and quotes: document kind (invoice, quote, credit note), invoice kind (partial, final), number, issue date, due date, valid-until date, net/VAT/gross amounts, IBANs and VAT IDs,
-- their line items: position number, text, quantity and unit, unit price, total, section and whether a position is optional.
+- field candidates of invoices and quotes: document kind (invoice, quote, credit note), invoice kind (partial, final), number, issue date, due date, valid-until date, net/VAT/gross amounts with their tax lines, currency, seller, IBANs and VAT IDs,
+- their line items: position number, text, quantity and unit, unit price, total, tax rate, section and whether a position is optional.
 
 Text extraction and OCR build on [pdf-inspector](https://github.com/firecrawl/pdf-inspector): pages without a usable text layer go to PP-OCRv6 Small (rendered with PDFium, run on ONNX Runtime); text-based PDFs never load either. [docs/ocr-benchmark.md](docs/ocr-benchmark.md) explains why this engine and not Tesseract. E-invoice XML is not parsed here; that is left to a dedicated e-invoice library in the consuming application. Candidates are proposals for a person to confirm; a field that cannot be read with confidence stays empty.
 
