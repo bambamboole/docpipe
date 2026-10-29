@@ -147,7 +147,9 @@ pub struct Analysis {
 }
 
 /// Analyses `bytes` completely, OCR included, as `ocr_settings` allow. Both
-/// phases run in a row on the calling thread; see the module docs.
+/// phases run in a row on the calling thread; see the module docs. Nothing
+/// serialises OCR here: a caller that analyses documents concurrently with
+/// OCR on must do so itself, as the HTTP layer does with its single slot.
 pub fn analyze(bytes: &[u8], ocr_settings: &OcrSettings) -> Result<Analysis, AnalyzeError> {
     let native = analyze_native(bytes)?;
     let report = ocr::recognize(bytes, native.pages_needing_ocr(), ocr_settings);

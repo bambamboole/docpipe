@@ -97,7 +97,7 @@ async fn serve(port: u16, config: docpipe::http::Config) -> Result<(), StartupEr
         .await
         .map_err(|source| StartupError::Bind { address, source })?;
 
-    tracing::info!(%address, "docpipe listening");
+    tracing::info!(address = %listener.local_addr().unwrap_or(address), "docpipe listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())

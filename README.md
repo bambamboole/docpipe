@@ -121,7 +121,7 @@ As in [pdf-ua-api](https://github.com/bambamboole/pdf-ua-api), docpipe only veri
 
 With `JWT_AUDIENCE` set, a token without an `aud` claim is rejected, not only one with another audience. The algorithm is pinned to RS256 before the signature is looked at, so tokens with another algorithm or `alg: none`, and tokens without a `kid`, are rejected (RFC 8725).
 
-The JWKS is fetched at startup. When the issuer is unreachable, a warning is logged, the service starts anyway, and the first request fetches the keys again. A token that names an unknown key triggers a refresh, at most once a minute, and a failed refresh keeps the keys already cached. The fetch runs on a blocking thread, so other requests are not stalled by it.
+The JWKS is fetched at startup. When the issuer is unreachable, a warning is logged and the service starts anyway. A token that names an unknown key triggers a refresh, attempted at most once a minute whether it succeeds or not, so a stream of forged tokens cannot hammer the issuer; a failed refresh keeps the keys already cached. The fetch runs on a blocking thread outside the key cache's lock, so tokens with known keys are verified meanwhile.
 
 ## Configuration
 

@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use jsonwebtoken::jwk::JwkSet;
@@ -156,6 +156,10 @@ pub struct JwtConfig {
 pub struct JwtVerifier {
     config: JwtConfig,
     keys: RwLock<KeyCache>,
+    /// Held while the JWKS is fetched: concurrent requests with unknown keys
+    /// wait for one fetch instead of each starting their own, while
+    /// verifications with known keys go on reading the cache.
+    fetching: Mutex<()>,
     /// Unknown key ids refresh the JWKS at most this often.
     refresh_interval: Duration,
 }
@@ -163,9 +167,9 @@ pub struct JwtVerifier {
 #[derive(Default)]
 struct KeyCache {
     keys: HashMap<String, DecodingKey>,
-    /// When the keys were last fetched successfully; `None` until the first
-    /// fetch.
-    fetched_at: Option<Instant>,
+    /// When a fetch was last attempted, successful or not; `None` until the
+    /// first attempt.
+    attempted_at: Option<Instant>,
 }
 
 impl fmt::Debug for KeyCache {
@@ -173,7 +177,7 @@ impl fmt::Debug for KeyCache {
         formatter
             .debug_struct("KeyCache")
             .field("key_ids", &self.keys.keys().collect::<Vec<_>>())
-            .field("fetched_at", &self.fetched_at)
+            .field("attempted_at", &self.attempted_at)
             .finish()
     }
 }
@@ -190,6 +194,7 @@ impl JwtVerifier {
         Self {
             config,
             keys: RwLock::new(KeyCache::default()),
+            fetching: Mutex::new(()),
             refresh_interval: REFRESH_INTERVAL,
         }
     }
@@ -197,8 +202,8 @@ impl JwtVerifier {
     /// Fetches the JWKS now and replaces the cached keys with it. On failure
     /// the cache keeps whatever it held before.
     pub fn preload(&self) -> Result<(), AuthError> {
-        let mut cache = self.keys.write().unwrap_or_else(PoisonError::into_inner);
-        self.refresh(&mut cache)
+        let _fetch = self.fetching.lock().unwrap_or_else(PoisonError::into_inner);
+        self.refresh()
     }
 
     /// The claim checks of this issuer. RS256 only: with a single accepted
@@ -260,38 +265,37 @@ impl JwtVerifier {
             return Ok(key);
         }
 
-        // The write lock is held across the fetch on purpose: concurrent
-        // requests with unknown keys wait for one fetch instead of each
-        // starting their own.
-        let mut cache = self.keys.write().unwrap_or_else(PoisonError::into_inner);
+        let _fetch = self.fetching.lock().unwrap_or_else(PoisonError::into_inner);
 
         // Another request may have refreshed while this one waited.
-        if let Some(key) = cache.keys.get(kid) {
-            return Ok(key.clone());
+        if let Some(key) = self.cached(kid) {
+            return Ok(key);
         }
 
-        if cache
-            .fetched_at
-            .is_some_and(|fetched| fetched.elapsed() < self.refresh_interval)
-        {
+        let attempted_recently = self
+            .keys
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .attempted_at
+            .is_some_and(|attempted| attempted.elapsed() < self.refresh_interval);
+        if attempted_recently {
             return Err(AuthError::Invalid(format!("unknown key {kid}")));
         }
 
-        self.refresh(&mut cache)?;
+        self.refresh()?;
 
-        cache
-            .keys
-            .get(kid)
-            .cloned()
+        self.cached(kid)
             .ok_or_else(|| AuthError::Invalid(format!("unknown key {kid}")))
     }
 
-    /// Replaces the cached keys with a fresh fetch. The cache is only
-    /// touched once the fetch has succeeded, so a failure keeps the last
-    /// good keys and the time they were fetched.
-    fn refresh(&self, cache: &mut KeyCache) -> Result<(), AuthError> {
-        cache.keys = fetch_jwks(&self.config.jwks_url)?;
-        cache.fetched_at = Some(Instant::now());
+    /// Replaces the cached keys with a fresh fetch. The fetch runs without
+    /// the cache lock, so verifications with known keys go on meanwhile. The
+    /// attempt is recorded whether it succeeds or not, so a failing issuer is
+    /// asked at most once per interval; a failure keeps the last good keys.
+    fn refresh(&self) -> Result<(), AuthError> {
+        self.keys.write().unwrap_or_else(PoisonError::into_inner).attempted_at = Some(Instant::now());
+        let keys = fetch_jwks(&self.config.jwks_url)?;
+        self.keys.write().unwrap_or_else(PoisonError::into_inner).keys = keys;
         Ok(())
     }
 
@@ -310,7 +314,7 @@ impl JwtVerifier {
         {
             let mut cache = verifier.keys.write().unwrap();
             cache.keys = parse_jwks(jwks).unwrap();
-            cache.fetched_at = Some(Instant::now());
+            cache.attempted_at = Some(Instant::now());
         }
         verifier
     }
@@ -585,6 +589,21 @@ pub(crate) mod tests {
         assert!(matches!(verifier.verify(&unknown), Err(AuthError::Jwks(_))));
         assert!(verifier.cached("test-key").is_some());
         assert_eq!(verifier.verify(&token(json!({}))), Ok(()));
+    }
+
+    #[test]
+    fn asks_a_failing_issuer_at_most_once_per_interval() {
+        let mut verifier = verifier(None, &[]);
+        verifier.refresh_interval = Duration::ZERO;
+        let unknown = sign(&OTHER_KEY, Some("unknown-key"), json!({}));
+        assert!(matches!(verifier.verify(&unknown), Err(AuthError::Jwks(_))));
+
+        // The failed attempt counts: within the interval, no second fetch.
+        verifier.refresh_interval = REFRESH_INTERVAL;
+        assert_eq!(
+            verifier.verify(&unknown),
+            Err(AuthError::Invalid("unknown key unknown-key".to_owned()))
+        );
     }
 
     #[test]

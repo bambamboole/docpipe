@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::thread::available_parallelism;
 use std::time::Duration;
 
+use tokio::sync::Semaphore;
+
 use crate::auth::Auth;
 use crate::http::Config;
 use crate::ocr::OcrSettings;
@@ -89,13 +91,32 @@ impl Settings {
         let max_concurrent = parse_or(&lookup, "DOCPIPE_MAX_CONCURRENT", || {
             available_parallelism().map_or(1, std::num::NonZero::get)
         })?;
-        let max_queued = parse_or(&lookup, "DOCPIPE_MAX_QUEUED", || max_concurrent * 2)?;
+        let max_queued = parse_or(&lookup, "DOCPIPE_MAX_QUEUED", || max_concurrent.saturating_mul(2))?;
         let max_body_mb = parse_or(&lookup, "DOCPIPE_MAX_BODY_MB", || DEFAULT_MAX_BODY_MB)?;
         let timeout_secs = parse_or(&lookup, "DOCPIPE_TIMEOUT_SECS", || DEFAULT_TIMEOUT.as_secs())?;
 
         at_least_one("DOCPIPE_MAX_CONCURRENT", max_concurrent)?;
         at_least_one("DOCPIPE_MAX_BODY_MB", max_body_mb)?;
         at_least_one("DOCPIPE_TIMEOUT_SECS", timeout_secs)?;
+
+        // The sums and products below feed semaphores and the body limit; an
+        // absurd value is a mistake to report, not something to wrap around.
+        if max_concurrent
+            .checked_add(max_queued)
+            .is_none_or(|in_flight| in_flight > Semaphore::MAX_PERMITS)
+        {
+            return Err(invalid(
+                "DOCPIPE_MAX_QUEUED",
+                max_queued,
+                format!(
+                    "with DOCPIPE_MAX_CONCURRENT it exceeds {} requests in flight",
+                    Semaphore::MAX_PERMITS
+                ),
+            ));
+        }
+        let max_body_bytes = max_body_mb
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| invalid("DOCPIPE_MAX_BODY_MB", max_body_mb, "too large for this machine"))?;
 
         let ocr = OcrSettings {
             enabled: ocr_enabled(&lookup)?,
@@ -110,7 +131,7 @@ impl Settings {
             sentry: SentrySettings::from_vars(&lookup).map_err(ConfigError::Sentry)?,
             http: Config {
                 auth,
-                max_body_bytes: max_body_mb * 1024 * 1024,
+                max_body_bytes,
                 ocr,
                 max_concurrent,
                 max_queued,
@@ -127,7 +148,18 @@ pub fn port_from_env() -> Result<u16, ConfigError> {
 }
 
 fn port(lookup: impl Fn(&str) -> Option<String>) -> Result<u16, ConfigError> {
-    parse_or(lookup, "PORT", || DEFAULT_PORT)
+    let port = parse_or(lookup, "PORT", || DEFAULT_PORT)?;
+    // Port 0 would bind an ephemeral port that `docpipe health` cannot know.
+    at_least_one("PORT", port)?;
+    Ok(port)
+}
+
+fn invalid(name: &'static str, value: impl std::fmt::Display, reason: impl Into<String>) -> ConfigError {
+    ConfigError::Invalid {
+        name,
+        value: value.to_string(),
+        reason: reason.into(),
+    }
 }
 
 /// A trimmed, non-empty value of `name`; a blank value counts as unset.
@@ -162,11 +194,7 @@ where
     T: Copy + PartialEq + Default + std::fmt::Display,
 {
     if value == T::default() {
-        return Err(ConfigError::Invalid {
-            name,
-            value: value.to_string(),
-            reason: "must be at least 1".to_owned(),
-        });
+        return Err(invalid(name, value, "must be at least 1"));
     }
 
     Ok(())
@@ -321,7 +349,12 @@ mod tests {
 
     #[test]
     fn rejects_zero_where_the_service_could_not_work() {
-        for name in ["DOCPIPE_MAX_CONCURRENT", "DOCPIPE_MAX_BODY_MB", "DOCPIPE_TIMEOUT_SECS"] {
+        for name in [
+            "PORT",
+            "DOCPIPE_MAX_CONCURRENT",
+            "DOCPIPE_MAX_BODY_MB",
+            "DOCPIPE_TIMEOUT_SECS",
+        ] {
             assert!(settings(&[(name, "0")]).is_err(), "{name}=0");
         }
 
@@ -335,6 +368,20 @@ mod tests {
         assert!(settings(&[("DOCPIPE_OCR", "ON")]).unwrap().http.ocr.enabled);
         assert!(!settings(&[("DOCPIPE_OCR", "off")]).unwrap().http.ocr.enabled);
         assert!(settings(&[("DOCPIPE_OCR", "false")]).is_err());
+    }
+
+    #[test]
+    fn rejects_sizes_that_would_overflow() {
+        let huge = usize::MAX.to_string();
+
+        for (name, value) in [
+            ("DOCPIPE_MAX_BODY_MB", huge.as_str()),
+            ("DOCPIPE_MAX_QUEUED", huge.as_str()),
+            ("DOCPIPE_MAX_CONCURRENT", huge.as_str()),
+            ("DOCPIPE_MAX_CONCURRENT", "4611686018427387904"),
+        ] {
+            assert!(settings(&[(name, value)]).is_err(), "{name}={value}");
+        }
     }
 
     #[test]
