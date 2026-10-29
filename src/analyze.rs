@@ -309,7 +309,7 @@ impl NativePdf {
 
         let einvoice = attachments::find_einvoice(&self.embedded);
 
-        let has_text = lines.iter().any(|line| !line.spans.is_empty());
+        let has_text = lines.iter().any(|line| !line.spans().is_empty());
         let text_source = match (
             has_text,
             report.status == OcrStatus::Applied && !report.pages.is_empty(),
@@ -378,7 +378,7 @@ fn standalone_xml(bytes: &[u8]) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::attachments::EInvoiceSyntax;
-    use crate::attachments::tests::{CII, pdf_with_attachments};
+    use crate::test_support::{CII, pdf_with_attachments};
 
     #[test]
     fn returns_the_xml_of_a_hybrid_einvoice() {

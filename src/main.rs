@@ -1,7 +1,7 @@
 //! The `docpipe` binary: the service, and two subcommands for the image.
 //!
 //! - `docpipe` reads its [`Settings`] from the environment and serves the API.
-//! - `docpipe openapi` prints the OpenAPI document; `openapi.json` holds it.
+//! - `docpipe openapi` prints the `OpenAPI` document; `openapi.json` holds it.
 //! - `docpipe health` asks the running instance for `/health` and exits with
 //!   0 on `200`, 1 otherwise, for the Docker `HEALTHCHECK` without curl.
 
@@ -131,6 +131,6 @@ async fn shutdown() {
 
     tokio::select! {
         _ = interrupt => {},
-        _ = terminate => {},
+        () = terminate => {},
     }
 }

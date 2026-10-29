@@ -6,18 +6,14 @@
 //! and tax amounts per rate that add up to a gross amount it prints.
 
 use std::collections::BTreeSet;
-use std::sync::LazyLock;
-
-use regex::Regex;
 
 use crate::layout::Line;
+use crate::regex;
 
-/// A percentage of up to two digits with up to three decimals, not part of a
-/// longer number.
-static PERCENT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|[^\d.,'])(\d{1,2})(?:[.,](\d{1,3}))?\s?%").expect("valid regex"));
-static ONLY_PERCENT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d{1,2})(?:[.,](\d{1,3}))?\s?%$").expect("valid regex"));
+// A percentage of up to two digits with up to three decimals, not part of a
+// longer number; and a span that is only one.
+regex!(PERCENT, r"(?:^|[^\d.,'])(\d{1,2})(?:[.,](\d{1,3}))?\s?%");
+regex!(ONLY_PERCENT, r"^(\d{1,2})(?:[.,](\d{1,3}))?\s?%$");
 
 /// How many combinations of tax lines are tried before the search gives up
 /// and leaves the totals unread.
@@ -53,6 +49,7 @@ impl Rate {
 
     /// The rate in percent as a decimal with a point and no trailing zeros:
     /// `19`, `7.5`, `8.625`.
+    #[must_use]
     pub fn decimal(self) -> String {
         let text = format!("{}.{:03}", self.0 / 1_000, self.0 % 1_000);
 
@@ -66,7 +63,7 @@ pub fn rates(lines: &[Line]) -> Vec<Rate> {
         .iter()
         .flat_map(|line| {
             PERCENT
-                .captures_iter(&line.text())
+                .captures_iter(line.text())
                 .filter_map(|captures| Rate::parse(&captures[1], captures.get(2).map(|found| found.as_str())))
                 .collect::<Vec<_>>()
         })
@@ -78,17 +75,24 @@ pub fn rates(lines: &[Line]) -> Vec<Rate> {
 /// The net and tax amount, in cents, of one rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaxLine {
+    /// The rate the net amount is taxed at.
     pub rate: Rate,
+    /// The net amount in cents.
     pub net: i64,
+    /// The tax on `net` in cents, as printed.
     pub tax: i64,
 }
 
 /// Totals whose tax lines add up to a gross amount on the document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breakdown {
+    /// The sum of the lines' net amounts, in cents.
     pub net: i64,
+    /// The sum of the lines' tax amounts, in cents.
     pub tax: i64,
+    /// `net` plus `tax`, an amount printed on the document.
     pub gross: i64,
+    /// One line per rate, ordered by rate.
     pub lines: Vec<TaxLine>,
 }
 
@@ -190,17 +194,10 @@ impl Search<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::lines;
-    use crate::layout::tests::item;
+    use crate::test_support::lines_of;
 
     fn rates_in(texts: &[&str]) -> Vec<String> {
-        let items: Vec<_> = texts
-            .iter()
-            .enumerate()
-            .map(|(index, text)| item(1, 50.0, 700.0 - index as f32 * 20.0, text))
-            .collect();
-
-        rates(&lines(&items)).into_iter().map(Rate::decimal).collect()
+        rates(&lines_of(texts)).into_iter().map(Rate::decimal).collect()
     }
 
     fn rate(percent: &str) -> Rate {

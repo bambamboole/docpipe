@@ -6,8 +6,9 @@
 //! startup error, never a silent default: the service refuses to start rather
 //! than run with a configuration nobody meant.
 //!
-//! `AUTH_MODE` and `SENTRY_*` are read by [`Auth::from_env`] and
-//! [`SentrySettings::from_env`], whose errors are wrapped here.
+//! `AUTH_MODE` and `SENTRY_*` are parsed by `Auth::from_vars` and
+//! `SentrySettings::from_vars`, whose errors are wrapped here; no module
+//! but this one reads the environment.
 
 use std::path::{Path, PathBuf};
 use std::thread::available_parallelism;
@@ -78,14 +79,13 @@ pub struct Settings {
 impl Settings {
     /// The settings from the process environment.
     pub fn from_env() -> Result<Self, ConfigError> {
-        let auth = Auth::from_env().map_err(ConfigError::Auth)?;
-
-        Self::from_vars(|name| std::env::var(name).ok(), auth)
+        Self::from_vars(|name| std::env::var(name).ok())
     }
 
-    /// The settings from `lookup`, with `auth` already read from its own
-    /// variables. Separate from [`Self::from_env`] so tests can pass a map.
-    pub fn from_vars(lookup: impl Fn(&str) -> Option<String>, auth: Auth) -> Result<Self, ConfigError> {
+    /// The settings from `lookup`. Separate from [`Self::from_env`] so tests
+    /// can pass a map.
+    pub fn from_vars(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        let auth = Auth::from_vars(&lookup).map_err(ConfigError::Auth)?;
         let max_concurrent = parse_or(&lookup, "DOCPIPE_MAX_CONCURRENT", || {
             available_parallelism().map_or(1, std::num::NonZero::get)
         })?;
@@ -181,8 +181,8 @@ fn ocr_enabled(lookup: impl Fn(&str) -> Option<String>) -> Result<bool, ConfigEr
     match var(lookup, "DOCPIPE_OCR") {
         None => Ok(true),
         Some(value) => match value.to_ascii_lowercase().as_str() {
-            "on" | "true" | "1" | "yes" => Ok(true),
-            "off" | "false" | "0" | "no" => Ok(false),
+            "on" => Ok(true),
+            "off" => Ok(false),
             _ => Err(ConfigError::Invalid {
                 name: "DOCPIPE_OCR",
                 value,
@@ -240,15 +240,20 @@ mod tests {
 
     use super::*;
 
+    /// Settings from `vars`, with `AUTH_MODE=none` unless `vars` names one.
     fn settings(vars: &[(&str, &str)]) -> Result<Settings, ConfigError> {
-        Settings::from_vars(
-            |name| {
-                vars.iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            },
-            Auth::Public,
-        )
+        Settings::from_vars(|name| {
+            vars.iter()
+                .chain([("AUTH_MODE", "none")].iter())
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+    }
+
+    #[test]
+    fn wraps_auth_errors() {
+        assert!(matches!(settings(&[("AUTH_MODE", "basic")]), Err(ConfigError::Auth(_))));
+        assert!(settings(&[("AUTH_MODE", "api_key"), ("API_KEY", "s")]).is_ok());
     }
 
     /// A fresh directory under the system's temporary directory.
@@ -328,8 +333,8 @@ mod tests {
     fn treats_blank_values_as_unset_and_rejects_unknown_ocr_modes() {
         assert_eq!(settings(&[("PORT", "  ")]).unwrap().port, 8080);
         assert!(settings(&[("DOCPIPE_OCR", "ON")]).unwrap().http.ocr.enabled);
-        assert!(!settings(&[("DOCPIPE_OCR", "false")]).unwrap().http.ocr.enabled);
-        assert!(settings(&[("DOCPIPE_OCR", "maybe")]).is_err());
+        assert!(!settings(&[("DOCPIPE_OCR", "off")]).unwrap().http.ocr.enabled);
+        assert!(settings(&[("DOCPIPE_OCR", "false")]).is_err());
     }
 
     #[test]

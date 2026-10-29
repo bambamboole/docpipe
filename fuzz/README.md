@@ -14,4 +14,4 @@ mkdir -p fuzz/corpus/analyze
 cp tests/fixtures/*.pdf fuzz/corpus/analyze/
 ```
 
-`fuzz/corpus/` and `fuzz/artifacts/` (the crashing inputs) are not committed. CI only compiles the target (`cargo +nightly fuzz build`), so it cannot drift from the library's API.
+`fuzz/corpus/`, `fuzz/artifacts/` (the crashing inputs), `fuzz/target/` and `fuzz/Cargo.lock` are not committed. The fuzz crate is its own workspace that depends on `docpipe` by path, so the root `cargo` commands do not build it, and `.dockerignore` keeps it out of the image. CI installs cargo-fuzz and only compiles the target (`cargo +nightly fuzz build`), so it cannot drift from the library's API.

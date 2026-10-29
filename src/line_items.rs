@@ -10,19 +10,18 @@
 //! (`19 %`) is its tax rate when the document's tax lines confirm that rate.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
 
-use regex::Regex;
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::layout::{Line, Span};
 use crate::numbers::{self, NumberFormat};
 use crate::profile::{LineItemWords, Profile};
+use crate::regex;
 use crate::tax::Rate;
 
 /// One position of a quote or invoice.
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct LineItem {
     /// The position number as printed, e.g. `1.2` or `10073`.
     pub position: String,
@@ -32,8 +31,10 @@ pub struct LineItem {
     pub quantity: Option<String>,
     /// The unit as printed, e.g. `m²`, `Stk` or `pauschal`.
     pub unit: Option<String>,
-    /// Decimal strings with a dot and two fraction digits.
+    /// The price of one unit, as a decimal string with a dot and two
+    /// fraction digits.
     pub unit_price: Option<String>,
+    /// The position's total, written like `unit_price`.
     pub total: Option<String>,
     /// The tax rate in percent printed on the position, e.g. `19` or `7.5`,
     /// when it is one of the rates of the document's tax lines.
@@ -45,12 +46,6 @@ pub struct LineItem {
     pub section: Option<String>,
     /// 1-indexed page number of the position's first line.
     pub page: u32,
-}
-
-macro_rules! regex {
-    ($name:ident, $pattern:literal) => {
-        static $name: LazyLock<Regex> = LazyLock::new(|| Regex::new($pattern).expect("valid regex"));
-    };
 }
 
 regex!(POSITION, r"^(?:\d{1,3}(?:\.\d{1,3}){1,5}|\d{1,6})\.?$");
@@ -66,7 +61,7 @@ const FOOTER_LINES: usize = 4;
 /// The positions of the document; empty when it has fewer than two, which
 /// leaves letters and receipts without a misread table.
 /// `rates` are those of the document's tax lines.
-pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat, rates: &[Rate]) -> Vec<LineItem> {
+pub fn extract(lines: &[Line], profile: &Profile, numbers: NumberFormat, rates: &[Rate]) -> Vec<LineItem> {
     let reading = Reading {
         words: &profile.line_items,
         numbers,
@@ -75,7 +70,7 @@ pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat, rates:
     let repeated = repeated_lines(lines);
     let lines: Vec<&Line> = lines
         .iter()
-        .filter(|line| !line.spans.is_empty() && !repeated.contains(&normalized(line)))
+        .filter(|line| !line.spans().is_empty() && !repeated.contains(&normalized(line)))
         .collect();
 
     let mut items = Vec::new();
@@ -84,9 +79,9 @@ pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat, rates:
     let mut heading = Heading::default();
 
     for line in lines {
-        let starts_position = is_position(&line.spans[0])
-            && column.is_none_or(|x| (line.spans[0].x - x).abs() <= COLUMN_TOLERANCE)
-            && line.spans.len() > 1;
+        let starts_position = is_position(&line.spans()[0])
+            && column.is_none_or(|x| (line.spans()[0].x - x).abs() <= COLUMN_TOLERANCE)
+            && line.spans().len() > 1;
 
         if starts_position {
             if let Some(item) = open.take().and_then(Open::finish) {
@@ -100,7 +95,10 @@ pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat, rates:
 
         let text = line.text();
         let is_total = reading.words.total_line.is_match(text.trim())
-            && line.spans.iter().any(|span| numbers.whole_amount(&span.text).is_some());
+            && line
+                .spans()
+                .iter()
+                .any(|span| numbers.whole_amount(&span.text).is_some());
 
         if let Some(current) = open.as_mut() {
             if !is_total && current.continues_with(line) {
@@ -114,7 +112,7 @@ pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat, rates:
         }
 
         if !is_total {
-            heading.read(&text, reading.words);
+            heading.read(text, reading.words);
         }
     }
 
@@ -134,7 +132,7 @@ pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat, rates:
 #[derive(Clone, Copy)]
 struct Reading<'a> {
     words: &'a LineItemWords,
-    numbers: &'a NumberFormat,
+    numbers: NumberFormat,
     rates: &'a [Rate],
 }
 
@@ -220,7 +218,7 @@ impl<'a> Open<'a> {
     fn description_x(&self) -> Option<f32> {
         self.lines
             .iter()
-            .flat_map(|line| line.spans.iter().skip(usize::from(line == &self.lines[0])))
+            .flat_map(|line| line.spans().iter().skip(usize::from(line == &self.lines[0])))
             .find(|span| span_kind(span, self.reading) == SpanKind::Text)
             .map(|span| span.x)
     }
@@ -229,13 +227,13 @@ impl<'a> Open<'a> {
     /// description's column; a line ending with a colon at the position
     /// number's column heads a new group instead.
     fn continues_with(&self, line: &Line) -> bool {
-        let first = &line.spans[0];
-        let number_x = self.lines[0].spans[0].x;
+        let first = &line.spans()[0];
+        let number_x = self.lines[0].spans()[0].x;
 
         match self.description_x() {
             Some(x) if (x - number_x).abs() <= COLUMN_TOLERANCE => {
                 let text = line.text();
-                !text.trim_end().ends_with(':') || self.reading.words.note.is_match(&text)
+                !text.trim_end().ends_with(':') || self.reading.words.note.is_match(text)
             }
             Some(x) => first.x >= x - COLUMN_TOLERANCE,
             // The text starts on the next line, possibly in the number's column.
@@ -245,7 +243,7 @@ impl<'a> Open<'a> {
 
     fn finish(self) -> Option<Finished> {
         let first = &self.lines[0];
-        let number = &first.spans[0];
+        let number = &first.spans()[0];
         let mut quantity = None;
         let mut unit = None;
         let mut figures: Vec<String> = Vec::new();
@@ -257,7 +255,7 @@ impl<'a> Open<'a> {
             let mut text: Vec<&str> = Vec::new();
             let mut after_quantity = false;
 
-            for span in line.spans.iter().skip(usize::from(index == 0)) {
+            for span in line.spans().iter().skip(usize::from(index == 0)) {
                 match span_kind(span, self.reading) {
                     SpanKind::Quantity(value, symbol) if quantity.is_none() => {
                         quantity = Some(value);
@@ -361,7 +359,7 @@ fn is_position(span: &Span) -> bool {
 }
 
 fn has_marker_after_amount(line: &Line, reading: Reading<'_>) -> bool {
-    line.spans
+    line.spans()
         .iter()
         .skip_while(|span| reading.numbers.whole_amount(&span.text).is_none())
         .any(|span| reading.words.optional_marker.is_match(span.text.trim()))
@@ -393,7 +391,7 @@ fn join_wrapped(lines: &[String]) -> String {
 /// footers.
 fn repeated_lines(lines: &[Line]) -> Vec<String> {
     let mut pages: HashMap<u32, Vec<&Line>> = HashMap::new();
-    for line in lines.iter().filter(|line| !line.spans.is_empty()) {
+    for line in lines.iter().filter(|line| !line.spans().is_empty()) {
         pages.entry(line.page).or_default().push(line);
     }
 
@@ -404,7 +402,7 @@ fn repeated_lines(lines: &[Line]) -> Vec<String> {
             .iter()
             .take(HEADER_LINES)
             .chain(page.iter().rev().take(FOOTER_LINES))
-            .filter(|line| !is_position(&line.spans[0]));
+            .filter(|line| !is_position(&line.spans()[0]));
 
         for line in edges {
             let key = normalized(line);
@@ -437,11 +435,10 @@ fn normalized(line: &Line) -> String {
 mod tests {
     use super::*;
     use crate::layout::lines;
-    use crate::layout::tests::item;
-    use crate::profile::tests::german;
+    use crate::test_support::{german, item};
 
     fn extract(lines: &[Line]) -> Vec<LineItem> {
-        super::extract(lines, german(), &NumberFormat::new(german().decimal_mark), &[])
+        super::extract(lines, german(), NumberFormat::new(german().decimal_mark), &[])
     }
 
     /// Position, quantity, unit, unit price, total and whether it is optional.
@@ -616,7 +613,7 @@ mod tests {
         let items = super::extract(
             &lines,
             german(),
-            &NumberFormat::new(crate::numbers::DecimalMark::Point),
+            NumberFormat::new(crate::numbers::DecimalMark::Point),
             &[],
         );
 
@@ -653,7 +650,7 @@ mod tests {
         ]);
         let rates = [Rate::of_span("7%"), Rate::of_span("19%")].map(Option::unwrap);
 
-        let items = super::extract(&lines, german(), &NumberFormat::new(german().decimal_mark), &rates);
+        let items = super::extract(&lines, german(), NumberFormat::new(german().decimal_mark), &rates);
 
         assert_eq!(
             items.iter().map(|item| item.tax_rate.as_deref()).collect::<Vec<_>>(),

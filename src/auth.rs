@@ -51,11 +51,8 @@ impl Auth {
     /// The mode named by `AUTH_MODE`: `jwt` with `JWT_ISSUER` and
     /// `JWT_JWKS_URL`, `api_key` with `API_KEY`, or `none`. There is no
     /// default, so a forgotten setting cannot leave the service open.
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_vars(|name| std::env::var(name).ok())
-    }
-
-    fn from_vars(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+    /// [`crate::config`] passes the environment through `lookup`.
+    pub(crate) fn from_vars(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let var = |name: &str| lookup(name).filter(|value| !value.trim().is_empty());
         let required = |name: &str| var(name).ok_or_else(|| format!("AUTH_MODE requires {name}"));
 

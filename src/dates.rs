@@ -7,35 +7,45 @@
 //! which; otherwise it stays ambiguous, and [`settle`] decides by the order of
 //! two related dates or not at all.
 
-use std::sync::LazyLock;
-
-use regex::{Captures, Regex};
+use regex::Captures;
 
 use crate::layout::Line;
 use crate::profile::DateWords;
+use crate::regex;
 
-static ISO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b").expect("valid regex"));
-static DOTTED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})\b").expect("valid regex"));
+regex!(ISO, r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b");
+regex!(DOTTED, r"\b(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})\b");
 // Dashes need a four-digit year: `11-22-43` is a British sort code.
-static SLASHED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})|(\d{1,2})-(\d{1,2})-(\d{4}))\b").expect("valid regex")
-});
+regex!(
+    SLASHED,
+    r"\b(?:(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})|(\d{1,2})-(\d{1,2})-(\d{4}))\b"
+);
 
+/// The order of day and month in a slashed or dashed date.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Order {
+    /// `31/12/2026`, as in most of Europe.
     DayFirst,
+    /// `12/31/2026`, as in the United States.
     MonthFirst,
 }
 
 /// A date as read: certain, or one of two dates when the order of day and
 /// month is open.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reading {
+    /// The one date the text can mean.
     Date(Date),
-    Ambiguous { day_first: Date, month_first: Date },
+    /// A slashed date that is valid in both orders, and differs by them.
+    Ambiguous {
+        /// The date when the day comes first.
+        day_first: Date,
+        /// The date when the month comes first.
+        month_first: Date,
+    },
 }
 
+/// A calendar date that exists. Ordered by time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Date {
     year: u32,
@@ -57,7 +67,9 @@ impl Date {
         (1..=days).contains(&day).then_some(Self { year, month, day })
     }
 
-    pub fn iso(&self) -> String {
+    /// The date as `YYYY-MM-DD`.
+    #[must_use]
+    pub fn iso(self) -> String {
         format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
 }
@@ -76,7 +88,7 @@ impl<'p> DateReader<'p> {
         let mut month_first = false;
 
         for line in lines {
-            for captures in SLASHED.captures_iter(&line.text()) {
+            for captures in SLASHED.captures_iter(line.text()) {
                 let (first, second, _) = slashed(&captures);
                 day_first |= first > 12 && second <= 12;
                 month_first |= second > 12 && first <= 12;
@@ -97,7 +109,7 @@ impl<'p> DateReader<'p> {
         [&*ISO, &*DOTTED, &*SLASHED, &self.words.written]
             .into_iter()
             .filter_map(|pattern| pattern.find(text))
-            .min_by_key(|found| found.start())
+            .min_by_key(regex::Match::start)
             .map(|found| found.range())
     }
 
@@ -149,27 +161,27 @@ impl<'p> DateReader<'p> {
 /// an issue and a due date. An ambiguous date takes the reading under which
 /// the two are in order when only one is; otherwise it stays unread.
 pub fn settle(earlier: Option<Reading>, later: Option<Reading>) -> (Option<Date>, Option<Date>) {
-    let options = |reading: &Option<Reading>| -> Vec<Option<Date>> {
+    let options = |reading: Option<Reading>| -> Vec<Option<Date>> {
         match reading {
             None => vec![None],
-            Some(Reading::Date(date)) => vec![Some(*date)],
-            Some(Reading::Ambiguous { day_first, month_first }) => vec![Some(*day_first), Some(*month_first)],
+            Some(Reading::Date(date)) => vec![Some(date)],
+            Some(Reading::Ambiguous { day_first, month_first }) => vec![Some(day_first), Some(month_first)],
         }
     };
-    let certain = |reading: &Option<Reading>| match reading {
-        Some(Reading::Date(date)) => Some(*date),
+    let certain = |reading: Option<Reading>| match reading {
+        Some(Reading::Date(date)) => Some(date),
         _ => None,
     };
 
-    let both = [&earlier, &later].iter().all(|reading| reading.is_some());
+    let both = earlier.is_some() && later.is_some();
     if !both {
-        return (certain(&earlier), certain(&later));
+        return (certain(earlier), certain(later));
     }
 
     // The same order of day and month applies to both dates of a document.
     let orders = [0, 1].map(|order| {
         let pick = |options: &Vec<Option<Date>>| options[order.min(options.len() - 1)];
-        (pick(&options(&earlier)), pick(&options(&later)))
+        (pick(&options(earlier)), pick(&options(later)))
     });
     let in_order: Vec<(Option<Date>, Option<Date>)> =
         orders.into_iter().filter(|(earlier, later)| earlier <= later).collect();
@@ -177,7 +189,7 @@ pub fn settle(earlier: Option<Reading>, later: Option<Reading>) -> (Option<Date>
     match in_order.as_slice() {
         [(earlier, later)] => (*earlier, *later),
         [first, second] if first == second => *first,
-        _ => (certain(&earlier), certain(&later)),
+        _ => (certain(earlier), certain(later)),
     }
 }
 
@@ -200,18 +212,10 @@ fn number(digits: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::lines;
-    use crate::layout::tests::item;
-    use crate::profile::tests::german;
+    use crate::test_support::{german, lines_of};
 
     fn reader(texts: &[&str]) -> DateReader<'static> {
-        let items: Vec<_> = texts
-            .iter()
-            .enumerate()
-            .map(|(index, text)| item(1, 50.0, 700.0 - index as f32 * 20.0, text))
-            .collect();
-
-        DateReader::new(&lines(&items), &german().dates)
+        DateReader::new(&lines_of(texts), &german().dates)
     }
 
     fn iso(reader: &DateReader<'_>, text: &str) -> Option<String> {
@@ -274,8 +278,8 @@ mod tests {
         let reader = reader(&["Date: 09/03/2026", "Due Date: 08/04/2026"]);
         let (issue, due) = settle(reader.read("09/03/2026"), reader.read("08/04/2026"));
 
-        assert_eq!(issue.map(|date| date.iso()), Some("2026-03-09".to_owned()));
-        assert_eq!(due.map(|date| date.iso()), Some("2026-04-08".to_owned()));
+        assert_eq!(issue.map(Date::iso), Some("2026-03-09".to_owned()));
+        assert_eq!(due.map(Date::iso), Some("2026-04-08".to_owned()));
     }
 
     #[test]

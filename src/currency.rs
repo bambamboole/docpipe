@@ -54,6 +54,7 @@ static NAMED: LazyLock<Regex> = LazyLock::new(|| {
 
 /// A pattern for anything that may stand before or after an amount as its
 /// currency, including the ambiguous `$` and the rand's `R`.
+#[must_use]
 pub fn affix_pattern() -> String {
     format!(r"€|£|[A-Z]{{0,2}}\$|R|{}", CODES.join("|"))
 }
@@ -76,10 +77,8 @@ fn named(lines: &[Line]) -> BTreeSet<&'static str> {
     lines
         .iter()
         .flat_map(|line| {
-            let text = line.text();
-
             NAMED
-                .captures_iter(&text)
+                .captures_iter(line.text())
                 .filter_map(|captures| {
                     let token = captures.name("before").or_else(|| captures.name("after"))?.as_str();
                     currency(token)
@@ -100,17 +99,10 @@ fn currency(token: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::lines;
-    use crate::layout::tests::item;
+    use crate::test_support::lines_of;
 
     fn currency(texts: &[&str]) -> Option<String> {
-        let items: Vec<_> = texts
-            .iter()
-            .enumerate()
-            .map(|(index, text)| item(1, 50.0, 700.0 - index as f32 * 20.0, text))
-            .collect();
-
-        detect(&lines(&items))
+        detect(&lines_of(texts))
     }
 
     #[test]

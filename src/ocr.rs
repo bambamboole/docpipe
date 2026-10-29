@@ -38,9 +38,6 @@ const TOP_BASELINE: f32 = 10_000.0;
 /// Vertical distance between consecutive Markdown lines.
 const LINE_PITCH: f32 = 12.0;
 
-/// Nominal font size of an OCR line; OCR reports no sizes.
-const LINE_SIZE: f32 = 10.0;
-
 /// What the client is told when OCR fails. The library's error may name
 /// files and goes to the log instead.
 const FAILURE_MESSAGE: &str = "OCR failed";
@@ -104,6 +101,7 @@ pub struct OcrReport {
 
 impl OcrReport {
     /// A report of OCR that did not run, with `status` telling why.
+    #[must_use]
     pub fn without(status: OcrStatus) -> Self {
         Self {
             status,
@@ -178,7 +176,7 @@ pub fn recognize(bytes: &[u8], needs_ocr: &[u32], settings: &OcrSettings) -> Ocr
 /// Lines for field extraction from an OCR page's Markdown. OCR has no
 /// positions here, so table cells become spans spaced in column order and
 /// labels still find values to their right.
-pub fn lines(page: &OcrPage) -> Vec<Line> {
+pub(crate) fn lines(page: &OcrPage) -> Vec<Line> {
     let mut lines = Vec::new();
 
     for (index, raw) in page.markdown.lines().enumerate() {
@@ -210,12 +208,7 @@ pub fn lines(page: &OcrPage) -> Vec<Line> {
             .collect();
 
         if !spans.is_empty() {
-            lines.push(Line::new(
-                page.number,
-                TOP_BASELINE - index as f32 * LINE_PITCH,
-                LINE_SIZE,
-                spans,
-            ));
+            lines.push(Line::new(page.number, TOP_BASELINE - index as f32 * LINE_PITCH, spans));
         }
     }
 
@@ -271,9 +264,9 @@ mod tests {
 
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].text(), "Angebot");
-        assert_eq!(lines[2].spans.len(), 3);
-        assert_eq!(lines[2].spans[2].text, "1.234,56 €");
-        assert!(lines[2].spans[2].x > lines[2].spans[1].x);
+        assert_eq!(lines[2].spans().len(), 3);
+        assert_eq!(lines[2].spans()[2].text, "1.234,56 €");
+        assert!(lines[2].spans()[2].x > lines[2].spans()[1].x);
         assert!(lines.iter().all(|line| line.page == 2));
         assert!(lines[0].y > lines[1].y);
     }

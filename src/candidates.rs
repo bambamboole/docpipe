@@ -1,11 +1,10 @@
 //! Field candidates of invoices and quotes, read from reconstructed lines with
-//! the words of a language [`Profile`].
+//! the words of a language `Profile`.
 //!
 //! Everything here is a proposal for a person to confirm: values carry the line
 //! they were read from, and absent fields stay `None` rather than being guessed.
 
 use std::ops::Range;
-use std::sync::LazyLock;
 
 use regex::Regex;
 use serde::Serialize;
@@ -14,22 +13,52 @@ use utoipa::ToSchema;
 use crate::currency;
 use crate::dates::{self, Date, DateReader};
 use crate::layout::{Line, Span};
-use crate::line_items::{self, LineItem};
+use crate::line_items;
 use crate::numbers::{self, NumberFormat};
 use crate::profile::Profile;
+use crate::regex;
 use crate::seller;
 use crate::tax::{self, Breakdown};
 
+pub use crate::line_items::LineItem;
+
 /// Finds a value in a run of text and returns its byte range.
 type Find<'a> = &'a dyn Fn(&str) -> Option<Range<usize>>;
+
+/// How far, in PDF points, a span may start before or end after a label's
+/// column and still count as sitting in it.
+const COLUMN_MARGIN: f32 = 40.0;
+
+/// A span starting at most this far, in PDF points, left of a label's column
+/// is searched whole; one starting further left only from the column on.
+const COLUMN_START_MARGIN: f32 = 10.0;
+
+/// How many lines below a label its value is looked for.
+const LINES_BELOW_LABEL: usize = 3;
+
+/// Characters the search in a span starts before the estimated column: the
+/// proportional position is only an estimate.
+const OFFSET_MARGIN: usize = 3;
+
+/// What a document-kind word on the first page, where titles sit, counts
+/// against one elsewhere.
+const FIRST_PAGE_WEIGHT: usize = 2;
+
+/// What a credit-note word counts against an invoice or quote word on the
+/// same line: a credit note names the invoice it corrects.
+const CREDIT_NOTE_WEIGHT: usize = 3;
 
 /// What the document is, judged by its title and labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentKind {
+    /// An invoice, standard or partial.
     Invoice,
+    /// A quote or estimate.
     Quote,
+    /// A credit note, which corrects or cancels an invoice.
     CreditNote,
+    /// None of the above, such as a delivery note or a letter.
     Other,
 }
 
@@ -38,13 +67,16 @@ pub enum DocumentKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InvoiceKind {
+    /// An invoice that is neither partial nor final.
     Standard,
+    /// A partial or progress invoice.
     Partial,
+    /// The final invoice that settles the partial ones.
     Final,
 }
 
 /// A value and where it was read.
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct Field {
     /// The normalized value; dates as `YYYY-MM-DD`.
     pub value: String,
@@ -56,11 +88,14 @@ pub struct Field {
 
 /// The document's totals. Without tax lines that add up to a gross amount,
 /// only labelled amounts are returned.
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct Amounts {
-    /// Decimal strings with a dot and two fraction digits, e.g. `3250.00`.
+    /// The net amount as a decimal string with a dot and two fraction
+    /// digits, e.g. `3250.00`.
     pub net: Option<String>,
+    /// The tax amount, written like `net`.
     pub tax: Option<String>,
+    /// The gross amount, written like `net`.
     pub gross: Option<String>,
     /// The ISO 4217 code of the currency the amounts are written in, when the
     /// document names one unambiguously next to its amounts.
@@ -73,31 +108,37 @@ pub struct Amounts {
 }
 
 /// The net and tax amount of one tax rate.
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TaxLine {
     /// The rate in percent as printed, e.g. `19`, `7.5` or `8.1`.
     pub rate: String,
-    /// Decimal strings with a dot and two fraction digits.
+    /// The net amount taxed at the rate, as a decimal string with a dot and
+    /// two fraction digits.
     pub net: String,
+    /// The tax on `net`, written like it.
     pub tax: String,
 }
 
 /// Field candidates of an invoice or quote, for a person to confirm. A
 /// field that cannot be read with confidence is `null`.
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct Candidates {
     /// The language profile the document was read with, detected from its
     /// words, e.g. `de` or `en`.
     pub profile: String,
+    /// Whether the document is an invoice, a quote, a credit note or none.
     pub document_kind: DocumentKind,
     /// Only for invoices.
     pub invoice_kind: Option<InvoiceKind>,
     /// The invoice or quote number.
     pub number: Option<Field>,
+    /// The date the document was issued.
     pub issue_date: Option<Field>,
+    /// The date an invoice is payable by.
     pub due_date: Option<Field>,
     /// The end of a quote's validity.
     pub valid_until: Option<Field>,
+    /// The document's totals.
     pub amounts: Amounts,
     /// IBANs without spaces, checked with their ISO 13616 check digits.
     pub ibans: Vec<String>,
@@ -106,10 +147,13 @@ pub struct Candidates {
     pub vat_ids: Vec<String>,
     /// The issuing company, by its name with a legal form.
     pub seller_name: Option<Field>,
+    /// The positions of the document; empty when it has fewer than two.
     pub line_items: Vec<LineItem>,
 }
 
-pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
+/// The field candidates of a document's `lines`, read with the words of
+/// `profile`.
+pub(crate) fn extract(lines: &[Line], profile: &Profile) -> Candidates {
     let labels = &profile.labels;
     let numbers = NumberFormat::detect(lines, profile.decimal_mark);
     let reader = DateReader::new(lines, &profile.dates);
@@ -126,7 +170,7 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
         .iter()
         .filter(|line| {
             let text = line.text();
-            !labels.due_date.is_match(&text) && !labels.valid_until.is_match(&text)
+            !labels.due_date.is_match(text) && !labels.valid_until.is_match(text)
         })
         .collect();
     let issue = labelled(lines, &labels.issue_date, &find_date).or_else(|| first_match(&unclaimed, &find_date));
@@ -137,7 +181,7 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
     let (issued_for_quote, valid_to) = dates::settle(read(&issue), read(&valid_until));
     let all_amounts: Vec<i64> = lines
         .iter()
-        .flat_map(|line| &line.spans)
+        .flat_map(Line::spans)
         .flat_map(|span| numbers.amounts(&span.text).map(|(_, cents)| cents).collect::<Vec<_>>())
         .collect();
     let breakdown = tax::breakdown(&all_amounts, &tax::rates(lines));
@@ -156,11 +200,11 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
         issue_date: dated(issue, issued.or(issued_for_quote)),
         due_date: dated(due, due_on),
         valid_until: dated(valid_until, valid_to),
-        amounts: amounts(lines, profile, &numbers, breakdown),
+        amounts: amounts(lines, profile, numbers, breakdown),
         ibans: ibans(lines),
         vat_ids: vat_ids(lines),
         seller_name: seller::extract(lines, profile),
-        line_items: line_items::extract(lines, profile, &numbers, &rates),
+        line_items: line_items::extract(lines, profile, numbers, &rates),
     }
 }
 
@@ -173,12 +217,6 @@ fn dated(field: Option<Field>, date: Option<Date>) -> Option<Field> {
         value: date.iso(),
         ..field
     })
-}
-
-macro_rules! regex {
-    ($name:ident, $pattern:literal) => {
-        static $name: LazyLock<Regex> = LazyLock::new(|| Regex::new($pattern).expect("valid regex"));
-    };
 }
 
 regex!(NUMBER, r"\b[A-Z0-9][A-Z0-9\-/\.]*\d[A-Z0-9\-/]*\b");
@@ -222,7 +260,8 @@ regex!(
     )\b"
 );
 
-/// Scores keywords; the first page, where titles sit, counts double.
+/// Scores keywords; the first page, where titles sit, counts
+/// [`FIRST_PAGE_WEIGHT`] times.
 fn document_kind(lines: &[Line], profile: &Profile) -> DocumentKind {
     let words = &profile.document_kind;
     let mut invoice = 0;
@@ -231,7 +270,7 @@ fn document_kind(lines: &[Line], profile: &Profile) -> DocumentKind {
 
     for line in lines {
         let text = line.text().to_lowercase();
-        let weight = if line.page == 1 { 2 } else { 1 };
+        let weight = if line.page == 1 { FIRST_PAGE_WEIGHT } else { 1 };
 
         for keyword in &words.invoice {
             if text.contains(keyword.as_str()) {
@@ -244,7 +283,7 @@ fn document_kind(lines: &[Line], profile: &Profile) -> DocumentKind {
             }
         }
         if words.credit_note.iter().any(|keyword| text.contains(keyword.as_str())) {
-            credit += weight * 3;
+            credit += weight * CREDIT_NOTE_WEIGHT;
         }
     }
 
@@ -276,16 +315,16 @@ fn invoice_kind(lines: &[Line], profile: &Profile) -> InvoiceKind {
 
 /// The first value matching `value` after a `label`: in the rest of the
 /// label's span, then in the spans to its right, then in the same column on
-/// the next three lines.
+/// the next [`LINES_BELOW_LABEL`] lines.
 fn labelled(lines: &[Line], label: &Regex, value: Find<'_>) -> Option<Field> {
     for (index, line) in lines.iter().enumerate() {
-        for (span_index, span) in line.spans.iter().enumerate() {
+        for (span_index, span) in line.spans().iter().enumerate() {
             let Some(found) = label.find(&span.text) else {
                 continue;
             };
 
             let rest = &span.text[found.end()..];
-            let right = line.spans[span_index + 1..].iter().map(|span| span.text.as_str());
+            let right = line.spans()[span_index + 1..].iter().map(|span| span.text.as_str());
 
             for candidate in std::iter::once(rest).chain(right) {
                 if let Some(range) = value(candidate) {
@@ -299,11 +338,11 @@ fn labelled(lines: &[Line], label: &Regex, value: Find<'_>) -> Option<Field> {
 
             for below in lines[index + 1..]
                 .iter()
-                .take(3)
+                .take(LINES_BELOW_LABEL)
                 .filter(|below| below.page == line.page)
             {
                 if let Some(matched) = below
-                    .spans
+                    .spans()
                     .iter()
                     .filter(|candidate| overlaps(&column, candidate))
                     .find_map(|candidate| value_in_column(candidate, &column, value))
@@ -320,7 +359,7 @@ fn labelled(lines: &[Line], label: &Regex, value: Find<'_>) -> Option<Field> {
 fn first_match(lines: &[&Line], value: Find<'_>) -> Option<Field> {
     lines.iter().find_map(|line| {
         let text = line.text();
-        value(&text).map(|range| field(line, &text[range]))
+        value(text).map(|range| field(line, &text[range]))
     })
 }
 
@@ -328,7 +367,7 @@ fn field(line: &Line, value: &str) -> Field {
     Field {
         value: value.trim().to_owned(),
         page: line.page,
-        line: line.text(),
+        line: line.text().to_owned(),
     }
 }
 
@@ -350,12 +389,13 @@ fn label_column(span: &Span, start: usize, end: usize) -> Span {
 /// narrow candidate inside the column is searched whole.
 fn value_in_column(candidate: &Span, column: &Span, value: Find<'_>) -> Option<String> {
     let chars = candidate.text.chars().count();
-    let offset = if candidate.x >= column.x - 10.0 || candidate.width <= 0.0 {
+    let offset = if candidate.x >= column.x - COLUMN_START_MARGIN || candidate.width <= 0.0 {
         0
     } else {
         let ratio = ((column.x - candidate.x) / candidate.width).clamp(0.0, 1.0);
-        // A small margin: proportional positions are only an estimate.
-        ((ratio * chars as f32) as usize).saturating_sub(3)
+        // `ratio` is clamped, so the estimate is never negative.
+        let estimated = usize::try_from((ratio * chars as f32) as i64).unwrap_or(0);
+        estimated.saturating_sub(OFFSET_MARGIN)
     };
     let byte_offset = candidate
         .text
@@ -368,11 +408,13 @@ fn value_in_column(candidate: &Span, column: &Span, value: Find<'_>) -> Option<S
     value(rest).map(|range| rest[range].to_owned())
 }
 
+/// Whether `candidate` sits in the column of `label`, give or take
+/// [`COLUMN_MARGIN`].
 fn overlaps(label: &Span, candidate: &Span) -> bool {
-    candidate.x <= label.right() + 40.0 && candidate.right() >= label.x - 40.0
+    candidate.x <= label.right() + COLUMN_MARGIN && candidate.right() >= label.x - COLUMN_MARGIN
 }
 
-fn amounts(lines: &[Line], profile: &Profile, numbers: &NumberFormat, breakdown: Option<Breakdown>) -> Amounts {
+fn amounts(lines: &[Line], profile: &Profile, numbers: NumberFormat, breakdown: Option<Breakdown>) -> Amounts {
     let currency = currency::detect(lines);
 
     if let Some(breakdown) = breakdown {
@@ -419,7 +461,7 @@ fn ibans(lines: &[Line]) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
 
     for line in lines {
-        for matched in IBAN.find_iter(&line.text()) {
+        for matched in IBAN.find_iter(line.text()) {
             let iban: String = matched.as_str().chars().filter(|c| !c.is_whitespace()).collect();
 
             if is_valid_iban(&iban) && !found.contains(&iban) {
@@ -456,7 +498,7 @@ fn vat_ids(lines: &[Line]) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
 
     for line in lines {
-        for matched in VAT_ID.find_iter(&line.text()) {
+        for matched in VAT_ID.find_iter(line.text()) {
             let mut vat_id: String = matched.as_str().chars().filter(char::is_ascii_alphanumeric).collect();
             // A Swiss number names its tax after the digits.
             if vat_id.starts_with("CHE") {
@@ -476,8 +518,7 @@ fn vat_ids(lines: &[Line]) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::layout::lines;
-    use crate::layout::tests::item;
-    use crate::profile::tests::{english, german};
+    use crate::test_support::{english, german, item};
 
     fn extract(lines: &[Line]) -> Candidates {
         super::extract(lines, german())

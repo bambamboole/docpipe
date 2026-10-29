@@ -1,7 +1,7 @@
 //! The HTTP API.
 //!
 //! `POST /v1/analyze` takes the document as the raw request body and answers
-//! with the [`Analysis`](crate::analyze::Analysis) as JSON. Requests carry a
+//! with the [`Analysis`] as JSON. Requests carry a
 //! bearer token as [`Auth`] demands: a JWT, an API key, or none.
 //!
 //! The layers around the handler run in this order: a request id is set and
@@ -80,7 +80,7 @@ struct AppState {
 #[openapi(
     info(
         title = "docpipe",
-        description = "Analyses German invoices and quotes: PDF classification, the text of every page, OCR of \
+        description = "Analyses invoices and quotes in German and English: PDF classification, the text of every page, OCR of \
             scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to \
             confirm. The service is stateless and keeps nothing it receives."
     ),
@@ -494,8 +494,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::attachments::tests::{CII, pdf_with_attachments};
     use crate::auth::tests::{ISSUER, token, verifier};
+    use crate::test_support::{CII, pdf_with_attachments};
 
     fn config(auth: Auth) -> Config {
         Config {

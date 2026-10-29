@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "docpipe",
-    "description": "Analyses German invoices and quotes: PDF classification, the text of every page, OCR of scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to confirm. The service is stateless and keeps nothing it receives.",
+    "description": "Analyses invoices and quotes in German and English: PDF classification, the text of every page, OCR of scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to confirm. The service is stateless and keeps nothing it receives.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -183,20 +183,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The gross amount, written like `net`."
           },
           "net": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Decimal strings with a dot and two fraction digits, e.g. `3250.00`."
+            "description": "The net amount as a decimal string with a dot and two fraction\ndigits, e.g. `3250.00`."
           },
           "tax": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The tax amount, written like `net`."
           },
           "tax_lines": {
             "type": "array",
@@ -359,15 +361,18 @@
         ],
         "properties": {
           "amounts": {
-            "$ref": "#/components/schemas/Amounts"
+            "$ref": "#/components/schemas/Amounts",
+            "description": "The document's totals."
           },
           "document_kind": {
-            "$ref": "#/components/schemas/DocumentKind"
+            "$ref": "#/components/schemas/DocumentKind",
+            "description": "Whether the document is an invoice, a quote, a credit note or none."
           },
           "due_date": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/Field"
+                "$ref": "#/components/schemas/Field",
+                "description": "The date an invoice is payable by."
               },
               {
                 "type": "null"
@@ -395,7 +400,8 @@
           "issue_date": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/Field"
+                "$ref": "#/components/schemas/Field",
+                "description": "The date the document was issued."
               },
               {
                 "type": "null"
@@ -406,7 +412,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/LineItem"
-            }
+            },
+            "description": "The positions of the document; empty when it has fewer than two."
           },
           "number": {
             "oneOf": [
@@ -481,10 +488,12 @@
             "description": "The attachment's file name, or `null` for a standalone XML document."
           },
           "syntax": {
-            "$ref": "#/components/schemas/EInvoiceSyntax"
+            "$ref": "#/components/schemas/EInvoiceSyntax",
+            "description": "Which of the two e-invoice syntaxes the document uses."
           },
           "xml": {
-            "type": "string"
+            "type": "string",
+            "description": "The XML as embedded or sent, unparsed."
           }
         }
       },
@@ -630,7 +639,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The position's total, written like `unit_price`."
           },
           "unit": {
             "type": [
@@ -644,7 +654,7 @@
               "string",
               "null"
             ],
-            "description": "Decimal strings with a dot and two fraction digits."
+            "description": "The price of one unit, as a decimal string with a dot and two\nfraction digits."
           }
         }
       },
@@ -791,14 +801,15 @@
         "properties": {
           "net": {
             "type": "string",
-            "description": "Decimal strings with a dot and two fraction digits."
+            "description": "The net amount taxed at the rate, as a decimal string with a dot and\ntwo fraction digits."
           },
           "rate": {
             "type": "string",
             "description": "The rate in percent as printed, e.g. `19`, `7.5` or `8.1`."
           },
           "tax": {
-            "type": "string"
+            "type": "string",
+            "description": "The tax on `net`, written like it."
           }
         }
       },

@@ -3,7 +3,7 @@
 A document analysis service for invoices and quotes, read in German and English and open to more languages through [language profiles](#language-profiles). It takes an incoming document and returns what a person needs to file it:
 
 - the PDF's classification (text-based, scanned, image-based, mixed) and the pages that need OCR,
-- the text of every page, line by line, and its Markdown — from the text layer, or from OCR for scanned pages,
+- the text of every page, line by line, and its Markdown, from the text layer or from OCR for scanned pages,
 - embedded files, and the ZUGFeRD/Factur-X or XRechnung XML among them, returned as is,
 - field candidates of invoices and quotes: document kind (invoice, quote, credit note), invoice kind (partial, final), number, issue date, due date, valid-until date, net/VAT/gross amounts with their tax lines, currency, seller, IBANs and VAT IDs,
 - their line items: position number, text, quantity and unit, unit price, total, tax rate, section and whether a position is optional.
@@ -20,7 +20,7 @@ docker run -p 8080:8080 -e AUTH_MODE=none ghcr.io/bambamboole/docpipe:latest
 
 ## API
 
-[`openapi.json`](openapi.json) describes the API as OpenAPI 3.1, and every instance serves it at `GET /openapi.json` without a token. `GET /docs` renders it with the [Lattice API reference](https://www.npmjs.com/package/@lattice-php/api-reference), whose playground sends requests to the instance itself; the page loads the reference from jsDelivr, pinned by version and hash. `cargo run -- openapi > openapi.json` regenerates it from the code; a test fails when the committed document is stale.
+[`openapi.json`](openapi.json) describes the API as OpenAPI 3.1, and every instance serves it at `GET /openapi.json` without a token. `GET /docs` renders it with the [Lattice API reference](https://www.npmjs.com/package/@lattice-php/api-reference), whose playground sends requests to the instance itself; the page loads the reference from jsDelivr, pinned by version and hash. `docpipe openapi` prints the document from the code; `cargo run -- openapi > openapi.json` regenerates the committed one, and a test fails when it is stale.
 
 ```http
 POST /v1/analyze
@@ -74,7 +74,22 @@ The answer is JSON:
 }
 ```
 
-Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, `503 auth_unavailable` (the issuer's JWKS cannot be fetched), `503 overloaded` (more than `DOCPIPE_MAX_CONCURRENT` plus `DOCPIPE_MAX_QUEUED` requests are in flight; retry later), `400 empty_body`, `400 unreadable_body` (the body could not be read to its end), `413 payload_too_large` (larger than `DOCPIPE_MAX_BODY_MB`), `415 unsupported_format` (neither PDF nor CII/UBL XML), `422 unreadable_pdf`, `503 timeout` (no analysis slot freed up, or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS`). The token is checked and the request admitted before its body is read, so an unauthenticated or shed request costs no memory. Every response carries an `x-request-id` header, the client's when it sent one, which the log lines of the request also carry. `GET /health` answers `ok` without a token.
+Every error, the 413 included, answers with `{"error": "<code>", "message": "…"}`. The message is a sentence for people; match on the code:
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `empty_body` | The body is empty |
+| 400 | `unreadable_body` | The body could not be read to its end |
+| 401 | `unauthorized` | The bearer token is missing or invalid |
+| 413 | `payload_too_large` | The body is larger than `DOCPIPE_MAX_BODY_MB` |
+| 415 | `unsupported_format` | Neither a PDF nor a CII/UBL XML |
+| 422 | `unreadable_pdf` | The bytes start like a PDF, but it cannot be read |
+| 500 | `internal_error` | The analysis panicked; the service keeps running |
+| 503 | `auth_unavailable` | The issuer's JWKS cannot be fetched |
+| 503 | `overloaded` | More than `DOCPIPE_MAX_CONCURRENT` plus `DOCPIPE_MAX_QUEUED` requests are in flight; retry later |
+| 503 | `timeout` | No analysis slot freed up, or the analysis did not finish, within `DOCPIPE_TIMEOUT_SECS` |
+
+The reason behind a `401` or `422` goes to the log, not to the client. The token is checked and the request admitted before its body is read, so an unauthenticated or shed request costs no memory. Every response carries an `x-request-id` header: the client's when it sent one, a UUID otherwise. The log lines of the request carry the same id. `GET /health` answers `ok` without a token.
 
 ### How fields are read
 
@@ -90,7 +105,7 @@ OCR pages have no positions in the response; their lines are rebuilt from the OC
 
 ### Language profiles
 
-The words fields are read by live in language profiles, one TOML file per language in [`profiles/`](profiles), compiled into the binary: the labels of each field, the words that tell invoices, quotes and credit notes apart, the vocabulary of line items, the legal forms of companies, the names of the months and the decimal mark to assume when a document does not show one. Everything else — the layout, number and date formats, currencies, IBANs, VAT numbers, e-invoices — does not depend on the language. The bundled profiles are German (`de`) and English (`en`). Each document is read with the profile whose labels and document words occur most often on it, German on a tie, and the response names it in `candidates.profile`.
+The words fields are read by live in language profiles, one TOML file per language in [`profiles/`](profiles), compiled into the binary: the labels of each field, the words that tell invoices, quotes and credit notes apart, the vocabulary of line items, the legal forms of companies, the names of the months and the decimal mark to assume when a document does not show one. Everything else does not depend on the language: the layout, number and date formats, currencies, IBANs, VAT numbers, e-invoices. The bundled profiles are German (`de`) and English (`en`). Each document is read with the profile whose labels and document words occur most often on it, German on a tie, and the response names it in `candidates.profile`.
 
 To add a language, copy `profiles/en.toml`, translate its patterns and word lists, add the file to `SOURCES` in `src/profile.rs`, and add tests that build documents in that language and name the layouts they cover. A profile that fails to parse or has an invalid pattern fails `cargo test`.
 
@@ -98,32 +113,34 @@ To add a language, copy `profiles/en.toml`, translate its patterns and word list
 
 As in [pdf-ua-api](https://github.com/bambamboole/pdf-ua-api), docpipe only verifies tokens, it never issues them. `AUTH_MODE` has no default, so the service does not start until it names one of three modes:
 
-- `jwt`: a request needs `Authorization: Bearer <JWT>` signed with RS256 by a key of the JWKS at `JWT_JWKS_URL`, with `JWT_ISSUER` as `iss`, an `exp` in the future, the `aud` from `JWT_AUDIENCE` when set, and a `client_id` from `JWT_ALLOWED_CLIENTS` when set. This fits OAuth 2.0 access tokens (RFC 9068) of the client credentials grant.
-- `api_key`: a request needs `Authorization: Bearer <API_KEY>`.
-- `none`: every request is accepted. Use it only for local development or behind a gateway that authenticates.
+- `jwt`: a request needs `Authorization: Bearer <JWT>` signed with RS256 by a key of the JWKS at `JWT_JWKS_URL`, named by the token's `kid`, with `JWT_ISSUER` as `iss`, an `exp` in the future, an `nbf` not in the future when present, the `aud` from `JWT_AUDIENCE` when set, and a `client_id` from `JWT_ALLOWED_CLIENTS` when set. This fits OAuth 2.0 access tokens (RFC 9068) of the client credentials grant.
+- `api_key`: a request needs `Authorization: Bearer <API_KEY>`. The key is compared in constant time.
+- `none`: every request is accepted, and startup logs a warning. Use it only for local development or behind a gateway that authenticates.
 
-`/health` is always public.
+`/health`, `/openapi.json` and `/docs` are always public.
 
-The JWKS is fetched at startup — when the issuer is unreachable, a warning is logged and the service starts anyway — and again when a token names an unknown key, at most once a minute.
+With `JWT_AUDIENCE` set, a token without an `aud` claim is rejected, not only one with another audience. The algorithm is pinned to RS256 before the signature is looked at, so tokens with another algorithm or `alg: none`, and tokens without a `kid`, are rejected (RFC 8725).
+
+The JWKS is fetched at startup. When the issuer is unreachable, a warning is logged, the service starts anyway, and the first request fetches the keys again. A token that names an unknown key triggers a refresh, at most once a minute, and a failed refresh keeps the keys already cached. The fetch runs on a blocking thread, so other requests are not stalled by it.
 
 ## Configuration
 
-Every variable is read at startup, and a value that cannot be used — a port that is not a number, `DOCPIPE_MAX_CONCURRENT=0`, a model directory without its models — stops the service from starting instead of being replaced by a default.
+Every variable is read at startup, in `src/config.rs`. A value that cannot be used stops the service from starting instead of being replaced by a default: a port that is not a number, `DOCPIPE_MAX_CONCURRENT=0`, a `DOCPIPE_OCR` that is neither `on` nor `off`, a `SENTRY_DSN` that does not parse, a model directory without its models. A blank value counts as unset.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | `8080` | Listening port |
+| `PORT` | `8080` | Listening port; `docpipe health` asks this port |
 | `AUTH_MODE` | – | Required: `jwt`, `api_key` or `none` |
 | `JWT_ISSUER`, `JWT_JWKS_URL` | – | Required with `jwt`: the expected issuer and the URL of its public keys |
-| `JWT_AUDIENCE` | – | Expected `aud`; unset, the audience is not checked |
+| `JWT_AUDIENCE` | – | Expected `aud`, which the token must then carry; unset, the audience is not checked |
 | `JWT_ALLOWED_CLIENTS` | – | Comma-separated `client_id` claims to accept; unset, every client of the issuer is accepted |
 | `API_KEY` | – | Required with `api_key`: the static bearer token |
-| `DOCPIPE_MAX_BODY_MB` | `50` | Largest accepted document |
-| `DOCPIPE_MAX_CONCURRENT` | CPU count | Analyses that run at once; further requests wait for a slot |
-| `DOCPIPE_MAX_QUEUED` | 2 × `DOCPIPE_MAX_CONCURRENT` | Requests admitted beyond the running ones to wait for a slot; further requests are shed with `503 overloaded` before their body is read |
-| `DOCPIPE_TIMEOUT_SECS` | `300` | How long a request may wait for a slot and its analysis |
+| `DOCPIPE_MAX_BODY_MB` | `50` | Largest accepted document, in MiB; at least 1 |
+| `DOCPIPE_MAX_CONCURRENT` | CPU count | Native analyses that run at once; further requests wait for a slot; at least 1 |
+| `DOCPIPE_MAX_QUEUED` | 2 × `DOCPIPE_MAX_CONCURRENT` | Requests admitted beyond the running ones to wait for a slot; further requests are shed with `503 overloaded` before their body is read. `0` sheds every request beyond the running ones |
+| `DOCPIPE_TIMEOUT_SECS` | `300` | How long a request may wait for a slot and its analysis; at least 1 |
 | `DOCPIPE_OCR` | `on` | `off` disables OCR; pages that need it are reported with `ocr.status: "disabled"` |
-| `DOCPIPE_OCR_MODEL_DIR` | – | Complete PP-OCRv6 Small model directory, checked at startup for the three model files; without it, models are downloaded into the cache on first use. Set in the Docker image. |
+| `DOCPIPE_OCR_MODEL_DIR` | – | Complete PP-OCRv6 Small model directory, checked at startup for `pp-ocrv6_small_det.onnx`, `pp-ocrv6_small_rec.onnx` and `ppocrv6_dict.txt`; without it, startup logs a warning and models are downloaded into the cache on first use. Set in the Docker image. |
 | `PDFIUM_LIB_PATH`, `ORT_DYLIB_PATH` | – | PDFium and ONNX Runtime shared libraries for OCR, checked at startup to exist. Set in the Docker image. |
 | `RUST_LOG` | `info,lopdf=error,ort=warn` | Log filter; logs are JSON on stdout |
 | `SENTRY_DSN` | – | Report to a Sentry-compatible server such as [Rustrak](https://github.com/rustrak/rustrak); unset, nothing is sent |
@@ -131,24 +148,35 @@ Every variable is read at startup, and a value that cannot be used — a port th
 | `SENTRY_ENVIRONMENT` | – | Environment of the reports |
 | `SENTRY_LOGS` | `off` | Lowest level sent as structured logs: `error`, `warn`, `info` or `debug` |
 
-## Error reporting
+The OCR paths are only checked while `DOCPIPE_OCR` is `on`; the binaries without an OCR runtime start with `DOCPIPE_OCR=off`.
 
-With `SENTRY_DSN` set, docpipe reports to Sentry or any server that speaks its protocol. `ERROR` events become issues with the `INFO` events before them as breadcrumbs, and panics are reported too. `SENTRY_LOGS` additionally sends every event from that level on as a structured log. `RUST_LOG` filters both stdout and Sentry. Reports carry no request data and, like the logs, no document content.
+## Logging and error reporting
+
+Logs are JSON on stdout, filtered by `RUST_LOG`. Every request writes one access log line at `INFO` with its method, path, request id, status and latency. No log line carries a header or a body, so neither the token nor the document reaches the log. A rejected request logs its reason at `INFO`, which the client does not get; a timed out analysis logs at `WARN`; an unreachable JWKS and a panicking analysis log at `ERROR`.
+
+With `SENTRY_DSN` set, docpipe reports to Sentry or any server that speaks its protocol. `ERROR` events become issues with the `INFO` events before them as breadcrumbs, and panics are reported too. `SENTRY_LOGS` additionally sends every event from that level on as a structured log. `RUST_LOG` filters both stdout and Sentry. Reports carry no request data and, like the logs, no document content. Release builds keep line tables, so a backtrace names file and line.
 
 ## Development
 
-Requires Rust 1.95.
+Requires Rust 1.95. CI runs the same checks with `--locked`, plus `cargo deny check` and a nightly build of the fuzz target.
 
 ```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --document-private-items
 cargo deny check
 AUTH_MODE=none cargo run --release
 curl --data-binary @invoice.pdf http://localhost:8080/v1/analyze
 ```
 
-Never commit real invoices: they contain personal data. Most tests build their PDFs in code; `tests/fixtures/` contains the fictional [Invoice Extraction Benchmark v1](tests/fixtures/README.md) PDF subset for integration tests.
+The lints are set in `[lints]` of `Cargo.toml`: `clippy::pedantic`, `missing_docs` and `clippy::unwrap_used` warn, and `-D warnings` turns them into errors. So every public item has a doc comment, `unwrap` and `expect` stay in tests (`clippy.toml`), `unsafe` is forbidden, and a lint that is wrong for one line gets an `#[allow]` with a comment that says why. `cargo doc` fails on a broken intra-doc link. `lopdf` is pinned to the version pdf-inspector uses, so the binary holds one copy of it; bump both together.
+
+Never commit real invoices: they contain personal data. Unit tests build their PDFs and their lines in code with the helpers in `src/test_support.rs`. `tests/fixtures/` holds fictional corpora: the [Invoice Extraction Benchmark v1](tests/fixtures/README.md) PDF subset for the smoke test in `tests/external_invoice_pdfs.rs`, and the [Sinabis samples](docs/sinabis-sample.md) for scan routing and e-invoices in `tests/sinabis_corpus.rs`.
+
+`tests/sinabis_candidates.rs` is the golden test of the field candidates. It parses the CII XML of each of the 100 Sinabis e-invoices and compares the candidates read from the PDF's text layer with it: document kind, number, issue and due date, gross, net and tax, the seller's VAT ID and name, and the number of line items. Every field has a minimum accuracy, and the fields that must not guess (`number`, `issue_date`, `due_date`, `gross`) a maximum share of wrong values. A regression fails the test; an improvement passes it and raises the threshold. `cargo test --test sinabis_candidates -- --nocapture` prints the table: per field, the documents whose XML has a value (`applicable`), the candidates that are `correct`, `missing` or `wrong`, the accuracy over the applicable documents and the share of wrong values over all 100. Below it, every mismatch is listed as `file: expected …, got …`, the candidate with the page and the line it was read from.
+
+`fuzz/` holds a cargo-fuzz target that feeds arbitrary bytes to the analysis with OCR off; a panic or a hang is a finding. CI only compiles it. [fuzz/README.md](fuzz/README.md) says how to run it.
 
 ## Installation
 
@@ -158,17 +186,17 @@ Each [release](https://github.com/bambamboole/docpipe/releases) publishes a cont
 docker run -p 8080:8080 -e AUTH_MODE=api_key -e API_KEY=change-me ghcr.io/bambamboole/docpipe:latest
 ```
 
-The image is built for linux/amd64 and linux/arm64 and contains everything OCR needs. The binaries (Linux x86_64 and arm64, macOS arm64) bring no OCR runtime: set `PDFIUM_LIB_PATH` and `ORT_DYLIB_PATH` to a PDFium and an ONNX Runtime library, or switch OCR off with `DOCPIPE_OCR=off`. The [Dockerfile](Dockerfile) names the tested versions.
+The image is built for linux/amd64 and linux/arm64 and contains everything OCR needs. It runs as an unprivileged user. Its `HEALTHCHECK` runs `docpipe health` every 30 s: the binary requests `/health` on `PORT` and exits 0 on `200`, so the image carries no curl. The [Dockerfile](Dockerfile) pins its base images by digest and keeps the cargo registry and the target directory in BuildKit cache mounts, so a rebuild compiles only what changed. The binaries (Linux x86_64 and arm64, macOS arm64) bring no OCR runtime: set `PDFIUM_LIB_PATH` and `ORT_DYLIB_PATH` to a PDFium and an ONNX Runtime library, or switch OCR off with `DOCPIPE_OCR=off`. The Dockerfile names the tested versions.
 
 Releases come from [release-please](https://github.com/googleapis/release-please): it keeps a release pull request open that bumps the version in `Cargo.toml` and writes `CHANGELOG.md` from the conventional commits on `main`. Merging it tags `v<version>` and creates the release, and the tag builds the binaries and the image. A `feat!` or `BREAKING CHANGE` raises the minor version while docpipe is below 1.0.
 
 ## Deployment
 
-`compose-production.yml` runs the image without a public port, for services in the same Docker network, with JWT authentication.
+`compose-production.yml` runs the image without a public port, for services in the same Docker network, with JWT authentication, the `docpipe health` healthcheck and a memory limit of 1.5 GiB.
 
 The image ships PDFium `native-v7988`, ONNX Runtime 1.27.0 and the PP-OCRv6 Small models (`oar-ocr-v0.7.0`), each verified by SHA-256 at build time; it never downloads anything at runtime. CI runs the OCR corpus on native amd64 and arm64 Docker runners.
 
-After OCR, ONNX Runtime keeps its memory pools: in production the container peaked at 1.12 GiB and stayed at 1.1 GiB (1.2 MiB idle before the first OCR). OCR runs one document at a time, so `compose-production.yml` limits the container to 1.5 GiB. A document whose pages need OCR first goes through native extraction in one of the `DOCPIPE_MAX_CONCURRENT` slots, then waits for the single OCR slot without holding that slot, so a burst of scans does not stall text PDFs; the wait ends with the request's `DOCPIPE_TIMEOUT_SECS`.
+Memory is budgeted as `DOCPIPE_MAX_CONCURRENT` native extractions plus one OCR run. An admitted request holds its body, up to `DOCPIPE_MAX_BODY_MB`, while it waits for a slot, so `DOCPIPE_MAX_CONCURRENT` plus `DOCPIPE_MAX_QUEUED` bodies may be buffered at once. A native extraction loads the PDF with pdf-inspector and lopdf; one compressed stream may inflate to at most 256 MiB, so a decompression bomb does not exhaust memory. OCR runs one document at a time: after it, ONNX Runtime keeps its memory pools, and in production the container peaked at 1.12 GiB and stayed at 1.1 GiB (1.2 MiB idle before the first OCR), hence the 1.5 GiB limit. A document whose pages need OCR first goes through native extraction in one of the `DOCPIPE_MAX_CONCURRENT` slots, then waits for the single OCR slot without holding a native slot, so a burst of scans does not stall text PDFs; the wait ends with the request's `DOCPIPE_TIMEOUT_SECS`.
 
 ## Roadmap
 

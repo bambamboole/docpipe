@@ -18,10 +18,15 @@ use serde::Deserialize;
 use crate::currency;
 use crate::layout::Line;
 
+/// The character that separates the decimals of an amount.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum DecimalMark {
+    /// `1.234,56`: the thousands are separated by points, spaces or
+    /// apostrophes.
     #[serde(rename = ",")]
     Comma,
+    /// `1,234.56`: the thousands are separated by commas, spaces or
+    /// apostrophes.
     #[serde(rename = ".")]
     Point,
 }
@@ -61,12 +66,17 @@ const GROUP_SPACES: &str = " \u{a0}\u{202f}";
 static COMMA: LazyLock<Patterns> = LazyLock::new(|| Patterns::new(&format!(".'{GROUP_SPACES}"), ","));
 static POINT: LazyLock<Patterns> = LazyLock::new(|| Patterns::new(&format!(",'{GROUP_SPACES}"), r"\."));
 
+/// The number format of one document: how its amounts and quantities are
+/// read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumberFormat {
+    /// The decimal mark the document's amounts use.
     pub mark: DecimalMark,
 }
 
 impl NumberFormat {
+    /// The format with the decimal mark `mark`.
+    #[must_use]
     pub fn new(mark: DecimalMark) -> Self {
         Self { mark }
     }
@@ -76,7 +86,7 @@ impl NumberFormat {
         let count = |format: Self| {
             lines
                 .iter()
-                .flat_map(|line| &line.spans)
+                .flat_map(Line::spans)
                 .map(|span| format.amounts(&span.text).count())
                 .sum::<usize>()
         };
@@ -90,7 +100,7 @@ impl NumberFormat {
         })
     }
 
-    fn patterns(&self) -> &'static Patterns {
+    fn patterns(self) -> &'static Patterns {
         match self.mark {
             DecimalMark::Comma => &COMMA,
             DecimalMark::Point => &POINT,
@@ -109,19 +119,19 @@ impl NumberFormat {
     }
 
     /// The first amount in `text`.
-    pub fn find_amount(&self, text: &str) -> Option<Range<usize>> {
+    pub fn find_amount(self, text: &str) -> Option<Range<usize>> {
         self.amounts(text).next().map(|(range, _)| range)
     }
 
     /// The cents of a span that holds only an amount, with or without a
     /// currency.
-    pub fn whole_amount(&self, text: &str) -> Option<i64> {
+    pub fn whole_amount(self, text: &str) -> Option<i64> {
         cents(self.patterns().whole_amount.captures(text.trim())?.get(1)?.as_str())
     }
 
     /// The quantity, as a decimal with a point, and the unit of a span that
     /// holds only both.
-    pub fn quantity(&self, text: &str) -> Option<(String, String)> {
+    pub fn quantity(self, text: &str) -> Option<(String, String)> {
         let captures = self.patterns().quantity.captures(text.trim())?;
 
         Some((self.decimal(&captures[1]), captures[2].to_owned()))
@@ -129,7 +139,7 @@ impl NumberFormat {
 
     /// A number as a decimal with a point and no trailing zeros: `1.234,500`
     /// as `1234.5`.
-    fn decimal(&self, number: &str) -> String {
+    fn decimal(self, number: &str) -> String {
         let decimal_mark = match self.mark {
             DecimalMark::Comma => ',',
             DecimalMark::Point => '.',
@@ -152,6 +162,7 @@ impl NumberFormat {
 }
 
 /// Cents as a decimal with a point and two decimals: `-123456` as `-1234.56`.
+#[must_use]
 pub fn decimal(cents: i64) -> String {
     format!(
         "{}{}.{:02}",
@@ -184,7 +195,7 @@ fn standalone(text: &str, range: Range<usize>) -> bool {
 mod tests {
     use super::*;
     use crate::layout::lines;
-    use crate::layout::tests::item;
+    use crate::test_support::item;
 
     fn comma() -> NumberFormat {
         NumberFormat::new(DecimalMark::Comma)
@@ -200,12 +211,12 @@ mod tests {
 
     #[test]
     fn reads_amounts_with_either_decimal_mark() {
-        assert_eq!(cents_in(comma(), "Summe 1.234,56 € und 12,50"), [123456, 1250]);
-        assert_eq!(cents_in(point(), "Total $1,234.56 and 12.50"), [123456, 1250]);
-        assert_eq!(cents_in(point(), "CHF 1'234.50"), [123450]);
-        assert_eq!(cents_in(comma(), "8\u{202f}672,10 €"), [867210]);
-        assert_eq!(cents_in(point(), "TOTAL NAD 53 625.87"), [5362587]);
-        assert_eq!(cents_in(point(), "Subtotal R10 208.07"), [1020807]);
+        assert_eq!(cents_in(comma(), "Summe 1.234,56 € und 12,50"), [123_456, 1250]);
+        assert_eq!(cents_in(point(), "Total $1,234.56 and 12.50"), [123_456, 1250]);
+        assert_eq!(cents_in(point(), "CHF 1'234.50"), [123_450]);
+        assert_eq!(cents_in(comma(), "8\u{202f}672,10 €"), [867_210]);
+        assert_eq!(cents_in(point(), "TOTAL NAD 53 625.87"), [5_362_587]);
+        assert_eq!(cents_in(point(), "Subtotal R10 208.07"), [1_020_807]);
         assert_eq!(cents_in(comma(), "Gutschrift -50,00"), [-5000]);
     }
 
@@ -234,12 +245,12 @@ mod tests {
 
     #[test]
     fn reads_a_span_that_is_only_an_amount_with_its_currency() {
-        assert_eq!(comma().whole_amount("1.500,00"), Some(150000));
+        assert_eq!(comma().whole_amount("1.500,00"), Some(150_000));
         assert_eq!(comma().whole_amount("662,72 €"), Some(66272));
-        assert_eq!(comma().whole_amount("€ 8.672,10"), Some(867210));
-        assert_eq!(point().whole_amount("$2,386.40"), Some(238640));
-        assert_eq!(point().whole_amount("£18,011.58"), Some(1801158));
-        assert_eq!(point().whole_amount("2,386.40 USD"), Some(238640));
+        assert_eq!(comma().whole_amount("€ 8.672,10"), Some(867_210));
+        assert_eq!(point().whole_amount("$2,386.40"), Some(238_640));
+        assert_eq!(point().whole_amount("£18,011.58"), Some(1_801_158));
+        assert_eq!(point().whole_amount("2,386.40 USD"), Some(238_640));
         assert_eq!(point().whole_amount("Total 2,386.40"), None);
     }
 
