@@ -6,7 +6,8 @@
 //! or as a lump-sum word (`pauschal`), on the first line or the last line of
 //! the position's text, followed by the unit price and the total. Header and
 //! footer lines repeated on several pages are skipped, so a position can run
-//! across a page break.
+//! across a page break. A rate printed in a span of its own on the position
+//! (`19 %`) is its tax rate when the document's tax lines confirm that rate.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -18,6 +19,7 @@ use utoipa::ToSchema;
 use crate::layout::{Line, Span};
 use crate::numbers::{self, NumberFormat};
 use crate::profile::{LineItemWords, Profile};
+use crate::tax::Rate;
 
 /// One position of a quote or invoice.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
@@ -33,6 +35,9 @@ pub struct LineItem {
     /// Decimal strings with a dot and two fraction digits.
     pub unit_price: Option<String>,
     pub total: Option<String>,
+    /// The tax rate in percent printed on the position, e.g. `19` or `7.5`,
+    /// when it is one of the rates of the document's tax lines.
+    pub tax_rate: Option<String>,
     /// An optional, alternative or contingency position, which is not part of
     /// the document's total.
     pub optional: bool,
@@ -60,10 +65,12 @@ const FOOTER_LINES: usize = 4;
 
 /// The positions of the document; empty when it has fewer than two, which
 /// leaves letters and receipts without a misread table.
-pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat) -> Vec<LineItem> {
+/// `rates` are those of the document's tax lines.
+pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat, rates: &[Rate]) -> Vec<LineItem> {
     let reading = Reading {
         words: &profile.line_items,
         numbers,
+        rates,
     };
     let repeated = repeated_lines(lines);
     let lines: Vec<&Line> = lines
@@ -122,12 +129,13 @@ pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat) -> Vec
     items
 }
 
-/// What positions are read by: the profile's words and the document's number
-/// format.
+/// What positions are read by: the profile's words, the document's number
+/// format and its confirmed tax rates.
 #[derive(Clone, Copy)]
 struct Reading<'a> {
     words: &'a LineItemWords,
     numbers: &'a NumberFormat,
+    rates: &'a [Rate],
 }
 
 /// The title or group that the following positions belong to, read from the
@@ -241,6 +249,7 @@ impl<'a> Open<'a> {
         let mut quantity = None;
         let mut unit = None;
         let mut figures: Vec<String> = Vec::new();
+        let mut tax_rate = None;
         let mut optional = self.optional;
         let mut description: Vec<String> = Vec::new();
 
@@ -257,6 +266,9 @@ impl<'a> Open<'a> {
                     }
                     SpanKind::Amount(value) if after_quantity || (index == 0 && figures.len() < 2) => {
                         figures.push(value);
+                    }
+                    SpanKind::Rate(rate) => {
+                        tax_rate = tax_rate.or(self.reading.rates.contains(&rate).then_some(rate));
                     }
                     SpanKind::Marker => optional = true,
                     SpanKind::Text => text.push(&span.text),
@@ -298,6 +310,7 @@ impl<'a> Open<'a> {
                 unit,
                 unit_price,
                 total,
+                tax_rate: tax_rate.map(Rate::decimal),
                 optional,
                 section: self.section,
                 page: first.page,
@@ -311,6 +324,7 @@ impl<'a> Open<'a> {
 enum SpanKind {
     Quantity(String, String),
     Amount(String),
+    Rate(Rate),
     Marker,
     Text,
 }
@@ -326,6 +340,9 @@ fn span_kind(span: &Span, reading: Reading<'_>) -> SpanKind {
     }
     if let Some((quantity, unit)) = reading.numbers.quantity(text) {
         return SpanKind::Quantity(quantity, unit);
+    }
+    if let Some(rate) = Rate::of_span(text) {
+        return SpanKind::Rate(rate);
     }
     if reading.words.optional_marker.is_match(text) {
         return SpanKind::Marker;
@@ -424,7 +441,7 @@ mod tests {
     use crate::profile::tests::german;
 
     fn extract(lines: &[Line]) -> Vec<LineItem> {
-        super::extract(lines, german(), &NumberFormat::new(german().decimal_mark))
+        super::extract(lines, german(), &NumberFormat::new(german().decimal_mark), &[])
     }
 
     /// Position, quantity, unit, unit price, total and whether it is optional.
@@ -596,7 +613,12 @@ mod tests {
             item(1, 500.0, 680.0, "$1,500.60"),
         ]);
 
-        let items = super::extract(&lines, german(), &NumberFormat::new(crate::numbers::DecimalMark::Point));
+        let items = super::extract(
+            &lines,
+            german(),
+            &NumberFormat::new(crate::numbers::DecimalMark::Point),
+            &[],
+        );
 
         assert_eq!(
             items.iter().map(position).collect::<Vec<_>>(),
@@ -605,6 +627,39 @@ mod tests {
                 ("2", Some("1250.5"), Some("m"), Some("1.20"), Some("1500.60"), false),
             ]
         );
+    }
+
+    #[test]
+    fn reads_a_tax_rate_per_position_when_the_totals_confirm_it() {
+        let lines = lines(&[
+            item(1, 40.0, 700.0, "1"),
+            item(1, 105.0, 700.0, "Fachbuch Statik"),
+            item(1, 330.0, 700.0, "2 Stk"),
+            item(1, 380.0, 700.0, "7 %"),
+            item(1, 410.0, 700.0, "25,00"),
+            item(1, 500.0, 700.0, "50,00"),
+            item(1, 40.0, 680.0, "2"),
+            item(1, 105.0, 680.0, "Planungsleistung"),
+            item(1, 330.0, 680.0, "1 Std"),
+            item(1, 380.0, 680.0, "19 %"),
+            item(1, 410.0, 680.0, "100,00"),
+            item(1, 500.0, 680.0, "100,00"),
+            item(1, 40.0, 660.0, "3"),
+            item(1, 105.0, 660.0, "Treuerabatt"),
+            item(1, 330.0, 660.0, "1 Stk"),
+            item(1, 380.0, 660.0, "10 %"),
+            item(1, 410.0, 660.0, "-15,00"),
+            item(1, 500.0, 660.0, "-15,00"),
+        ]);
+        let rates = [Rate::of_span("7%"), Rate::of_span("19%")].map(Option::unwrap);
+
+        let items = super::extract(&lines, german(), &NumberFormat::new(german().decimal_mark), &rates);
+
+        assert_eq!(
+            items.iter().map(|item| item.tax_rate.as_deref()).collect::<Vec<_>>(),
+            [Some("7"), Some("19"), None]
+        );
+        assert_eq!(items[0].description, "Fachbuch Statik");
     }
 
     #[test]

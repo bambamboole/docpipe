@@ -53,9 +53,9 @@ static NAMED: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// A pattern for anything that may stand before or after an amount as its
-/// currency, including the ambiguous `$`.
+/// currency, including the ambiguous `$` and the rand's `R`.
 pub fn affix_pattern() -> String {
-    format!(r"€|£|[A-Z]{{0,2}}\$|{}", CODES.join("|"))
+    format!(r"€|£|[A-Z]{{0,2}}\$|R|{}", CODES.join("|"))
 }
 
 /// The one currency the document names next to its numbers, if it names

@@ -18,6 +18,7 @@ use crate::line_items::{self, LineItem};
 use crate::numbers::{self, NumberFormat};
 use crate::profile::Profile;
 use crate::seller;
+use crate::tax::{self, Breakdown};
 
 /// Finds a value in a run of text and returns its byte range.
 type Find<'a> = &'a dyn Fn(&str) -> Option<Range<usize>>;
@@ -53,8 +54,8 @@ pub struct Field {
     pub line: String,
 }
 
-/// The document's totals. Without a consistent triple, only labelled amounts
-/// are returned.
+/// The document's totals. Without tax lines that add up to a gross amount,
+/// only labelled amounts are returned.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct Amounts {
     /// Decimal strings with a dot and two fraction digits, e.g. `3250.00`.
@@ -64,10 +65,21 @@ pub struct Amounts {
     /// The ISO 4217 code of the currency the amounts are written in, when the
     /// document names one unambiguously next to its amounts.
     pub currency: Option<String>,
-    /// VAT rate in percent, e.g. `19`, when net and tax add up to gross.
-    pub tax_rate: Option<u8>,
-    /// Whether net + tax = gross was found on the document.
+    /// The net and tax amount per tax rate, ordered by rate. Only rates the
+    /// document prints are used.
+    pub tax_lines: Vec<TaxLine>,
+    /// Whether the tax lines add up to the gross amount on the document.
     pub consistent: bool,
+}
+
+/// The net and tax amount of one tax rate.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct TaxLine {
+    /// The rate in percent as printed, e.g. `19`, `7.5` or `8.1`.
+    pub rate: String,
+    /// Decimal strings with a dot and two fraction digits.
+    pub net: String,
+    pub tax: String,
 }
 
 /// Field candidates of an invoice or quote, for a person to confirm. A
@@ -120,6 +132,16 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
     let read = |field: &Option<Field>| field.as_ref().and_then(|field| reader.read(&field.value));
     let (issued, due_on) = dates::settle(read(&issue), read(&due));
     let (issued_for_quote, valid_to) = dates::settle(read(&issue), read(&valid_until));
+    let all_amounts: Vec<i64> = lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .flat_map(|span| numbers.amounts(&span.text).map(|(_, cents)| cents).collect::<Vec<_>>())
+        .collect();
+    let breakdown = tax::breakdown(&all_amounts, &tax::rates(lines));
+    let rates: Vec<tax::Rate> = breakdown
+        .iter()
+        .flat_map(|breakdown| breakdown.lines.iter().map(|line| line.rate))
+        .collect();
 
     Candidates {
         document_kind,
@@ -130,11 +152,11 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Candidates {
         issue_date: dated(issue, issued.or(issued_for_quote)),
         due_date: dated(due, due_on),
         valid_until: dated(valid_until, valid_to),
-        amounts: amounts(lines, profile, &numbers),
+        amounts: amounts(lines, profile, &numbers, breakdown),
         ibans: ibans(lines),
         vat_ids: vat_ids(lines),
         seller_name: seller::extract(lines, profile),
-        line_items: line_items::extract(lines, profile, &numbers),
+        line_items: line_items::extract(lines, profile, &numbers, &rates),
     }
 }
 
@@ -346,22 +368,24 @@ fn overlaps(label: &Span, candidate: &Span) -> bool {
     candidate.x <= label.right() + 40.0 && candidate.right() >= label.x - 40.0
 }
 
-fn amounts(lines: &[Line], profile: &Profile, numbers: &NumberFormat) -> Amounts {
+fn amounts(lines: &[Line], profile: &Profile, numbers: &NumberFormat, breakdown: Option<Breakdown>) -> Amounts {
     let currency = currency::detect(lines);
-    let all: Vec<i64> = lines
-        .iter()
-        .flat_map(|line| &line.spans)
-        .flat_map(|span| numbers.amounts(&span.text).map(|(_, cents)| cents).collect::<Vec<_>>())
-        .filter(|cents| *cents > 0)
-        .collect();
 
-    if let Some((net, tax, gross, rate)) = consistent_triple(&all) {
+    if let Some(breakdown) = breakdown {
         return Amounts {
-            net: Some(numbers::decimal(net)),
-            tax: Some(numbers::decimal(tax)),
-            gross: Some(numbers::decimal(gross)),
+            net: Some(numbers::decimal(breakdown.net)),
+            tax: Some(numbers::decimal(breakdown.tax)),
+            gross: Some(numbers::decimal(breakdown.gross)),
             currency,
-            tax_rate: Some(rate),
+            tax_lines: breakdown
+                .lines
+                .iter()
+                .map(|line| TaxLine {
+                    rate: line.rate.decimal(),
+                    net: numbers::decimal(line.net),
+                    tax: numbers::decimal(line.tax),
+                })
+                .collect(),
             consistent: true,
         };
     }
@@ -378,35 +402,9 @@ fn amounts(lines: &[Line], profile: &Profile, numbers: &NumberFormat) -> Amounts
         // No largest-amount fallback: a wrong total is worse than none.
         gross: labelled_cents(&profile.labels.gross),
         currency,
-        tax_rate: None,
+        tax_lines: Vec::new(),
         consistent: false,
     }
-}
-
-/// The largest gross amount on the document for which a net amount and a VAT
-/// amount at 19 % or 7 % are also present, so that net + tax = gross.
-fn consistent_triple(amounts: &[i64]) -> Option<(i64, i64, i64, u8)> {
-    let mut best: Option<(i64, i64, i64, u8)> = None;
-
-    for &gross in amounts {
-        for &net in amounts.iter().filter(|net| **net < gross) {
-            let tax = gross - net;
-
-            if !amounts.contains(&tax) {
-                continue;
-            }
-
-            for rate in [19, 7] {
-                // Rounded per document; allow a cent of rounding difference.
-                if (net * rate as i64 - tax * 100).abs() <= 100 && best.is_none_or(|(_, _, current, _)| gross > current)
-                {
-                    best = Some((net, tax, gross, rate));
-                }
-            }
-        }
-    }
-
-    best
 }
 
 fn ibans(lines: &[Line]) -> Vec<String> {
@@ -514,7 +512,11 @@ mod tests {
                 tax: Some("617.50".to_owned()),
                 gross: Some("3867.50".to_owned()),
                 currency: Some("EUR".to_owned()),
-                tax_rate: Some(19),
+                tax_lines: vec![TaxLine {
+                    rate: "19".to_owned(),
+                    net: "3250.00".to_owned(),
+                    tax: "617.50".to_owned(),
+                }],
                 consistent: true,
             }
         );
@@ -537,6 +539,52 @@ mod tests {
         assert_eq!(amounts.net.as_deref(), Some("2400.00"));
         assert_eq!(amounts.tax.as_deref(), Some("456.00"));
         assert_eq!(amounts.gross.as_deref(), Some("2856.00"));
+    }
+
+    #[test]
+    fn splits_the_totals_of_an_invoice_with_two_rates() {
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 50.0, 400.0, "Nettobetrag"),
+            item(1, 400.0, 400.0, "150,00 €"),
+            item(1, 50.0, 385.0, "zzgl. 7 % USt. auf 50,00 €"),
+            item(1, 400.0, 385.0, "3,50 €"),
+            item(1, 50.0, 370.0, "zzgl. 19 % USt. auf 100,00 €"),
+            item(1, 400.0, 370.0, "19,00 €"),
+            item(1, 50.0, 355.0, "Rechnungsbetrag"),
+            item(1, 400.0, 355.0, "172,50 €"),
+            item(1, 50.0, 300.0, "Bei Zahlung binnen 10 Tagen 2 % Skonto."),
+        ]);
+
+        let amounts = extract(&lines).amounts;
+
+        assert_eq!(amounts.gross.as_deref(), Some("172.50"));
+        assert_eq!(amounts.tax.as_deref(), Some("22.50"));
+        assert_eq!(
+            amounts
+                .tax_lines
+                .iter()
+                .map(|line| (line.rate.as_str(), line.net.as_str(), line.tax.as_str()))
+                .collect::<Vec<_>>(),
+            [("7", "50.00", "3.50"), ("19", "100.00", "19.00")]
+        );
+    }
+
+    #[test]
+    fn leaves_the_tax_lines_empty_without_a_printed_rate() {
+        // 19 % of the net, but the document prints no rate.
+        let lines = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 50.0, 400.0, "Nettosumme: 3.250,00 €"),
+            item(1, 50.0, 385.0, "Umsatzsteuer: 617,50 €"),
+            item(1, 50.0, 370.0, "Gesamtsumme: 3.867,50 €"),
+        ]);
+
+        let amounts = extract(&lines).amounts;
+
+        assert!(amounts.tax_lines.is_empty());
+        assert!(!amounts.consistent);
+        assert_eq!(amounts.gross.as_deref(), Some("3867.50"));
     }
 
     #[test]

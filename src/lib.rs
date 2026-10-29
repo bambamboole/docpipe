@@ -15,4 +15,5 @@ pub mod numbers;
 pub mod ocr;
 pub mod profile;
 pub mod seller;
+pub mod tax;
 pub mod telemetry;
