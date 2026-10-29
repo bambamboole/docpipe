@@ -12,6 +12,12 @@ Text extraction and OCR build on [pdf-inspector](https://github.com/firecrawl/pd
 
 The service is stateless and keeps nothing it receives.
 
+## Quick start
+
+```sh
+docker run -p 8080:8080 -e AUTH_MODE=none ghcr.io/bambamboole/docpipe:latest
+```
+
 ## API
 
 [`openapi.json`](openapi.json) describes the API as OpenAPI 3.1, and every instance serves it at `GET /openapi.json` without a token. `GET /docs` renders it with the [Lattice API reference](https://www.npmjs.com/package/@lattice-php/api-reference), whose playground sends requests to the instance itself; the page loads the reference from jsDelivr, pinned by version and hash. `cargo run -- openapi > openapi.json` regenerates it from the code; a test fails when the committed document is stale.
@@ -151,7 +157,7 @@ docker run -p 8080:8080 -e AUTH_MODE=api_key -e API_KEY=change-me ghcr.io/bambam
 
 The image is built for linux/amd64 and contains everything OCR needs. The binaries (Linux x86_64 and arm64, macOS arm64) bring no OCR runtime: set `PDFIUM_LIB_PATH` and `ORT_DYLIB_PATH` to a PDFium and an ONNX Runtime library, or switch OCR off with `DOCPIPE_OCR=off`. The [Dockerfile](Dockerfile) names the tested versions.
 
-Releases are cut by pushing a tag `v<version>` that matches the version in `Cargo.toml`.
+Releases come from [release-please](https://github.com/googleapis/release-please): it keeps a release pull request open that bumps the version in `Cargo.toml` and writes `CHANGELOG.md` from the conventional commits on `main`. Merging it tags `v<version>` and creates the release, and the tag builds the binaries and the image. A `feat!` or `BREAKING CHANGE` raises the minor version while docpipe is below 1.0.
 
 ## Deployment
 

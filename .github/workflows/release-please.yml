@@ -1,0 +1,30 @@
+name: release-please
+
+# Keeps a release pull request open for the changes on main. Merging it tags
+# vX.Y.Z and creates the GitHub release; the tag starts the Release workflow.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          # A token of its own, not GITHUB_TOKEN: GitHub starts no workflows for
+          # GITHUB_TOKEN events, so neither CI on the release pull request nor
+          # the Release workflow on the tag would run.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
