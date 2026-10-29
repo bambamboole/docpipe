@@ -7,6 +7,30 @@
 id = "de"
 name = "German"
 
+[numbers]
+# The decimal mark, `,` or `.`, when a document's amounts do not show it.
+decimal_mark = ","
+
+[dates]
+# The months, January first, each with its abbreviations.
+months = [
+  ["Januar", "Jan", "Jänner", "Jän"],
+  ["Februar", "Feb"],
+  ["März", "Mär", "Mrz"],
+  ["April", "Apr"],
+  ["Mai"],
+  ["Juni", "Jun"],
+  ["Juli", "Jul"],
+  ["August", "Aug"],
+  ["September", "Sep", "Sept"],
+  ["Oktober", "Okt"],
+  ["November", "Nov"],
+  ["Dezember", "Dez"],
+]
+# Suffixes after the day of a written date, as the English `7th`; German
+# writes `7.`.
+ordinal_suffixes = []
+
 # A label is followed by its value: in the same run, to its right, or below it.
 [labels]
 invoice_number = '(?:\b(?:rechnungs?\s*-?\s*(?:nr|nummer|no)\.?|rechnung\s+nr\.?|belegnummer|beleg\s*-?\s*nr\.?)|(?:^|[\s,;(])nr\.)\s*:?'

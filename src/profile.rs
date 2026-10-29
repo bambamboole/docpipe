@@ -11,6 +11,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
 
+use crate::numbers::DecimalMark;
+
 /// The bundled profiles, in the order they are tried.
 const SOURCES: &[(&str, &str)] = &[("profiles/de.toml", include_str!("../profiles/de.toml"))];
 
@@ -40,11 +42,36 @@ pub struct Profile {
     /// A BCP 47 language tag, such as `de`.
     pub id: String,
     pub name: String,
+    /// The decimal mark when a document's amounts do not show it.
+    pub decimal_mark: DecimalMark,
+    pub dates: DateWords,
     pub labels: Labels,
     pub document_kind: DocumentKindWords,
     pub invoice_kind: InvoiceKindWords,
     pub line_items: LineItemWords,
     pub seller: SellerWords,
+}
+
+#[derive(Debug)]
+pub struct DateWords {
+    /// A date with a written month: day, month and year in the groups `da`,
+    /// `ma`, `ya` (`7. September 2026`), `db`, `mb`, `yb` (`September 7,
+    /// 2026`) or `dc`, `mc`, `yc` (`07-Sep-2026`).
+    pub written: Regex,
+    /// The lowercase names of each month, January first.
+    months: Vec<Vec<String>>,
+}
+
+impl DateWords {
+    /// The number of the month `name` names, January being 1.
+    pub fn month(&self, name: &str) -> Option<u32> {
+        let name = name.trim_end_matches('.').to_lowercase();
+
+        self.months
+            .iter()
+            .position(|names| names.contains(&name))
+            .map(|index| index as u32 + 1)
+    }
 }
 
 #[derive(Debug)]
@@ -97,11 +124,26 @@ pub struct SellerWords {
 struct Source {
     id: String,
     name: String,
+    numbers: NumberSource,
+    dates: DateSource,
     labels: LabelSource,
     document_kind: DocumentKindWords,
     invoice_kind: InvoiceKindWords,
     line_items: LineItemSource,
     seller: SellerSource,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NumberSource {
+    decimal_mark: DecimalMark,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DateSource {
+    months: Vec<Vec<String>>,
+    ordinal_suffixes: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +188,8 @@ impl Profile {
         Ok(Self {
             id: source.id,
             name: source.name,
+            decimal_mark: source.numbers.decimal_mark,
+            dates: date_words(source.dates)?,
             labels: Labels {
                 invoice_number: insensitive("labels.invoice_number", &labels.invoice_number)?,
                 quote_number: insensitive("labels.quote_number", &labels.quote_number)?,
@@ -177,6 +221,40 @@ impl Profile {
             },
         })
     }
+}
+
+fn date_words(source: DateSource) -> Result<DateWords, String> {
+    if source.months.len() != 12 || source.months.iter().any(Vec::is_empty) {
+        return Err("dates.months: name twelve months, each at least once".to_owned());
+    }
+
+    let months: Vec<Vec<String>> = source
+        .months
+        .iter()
+        .map(|names| names.iter().map(|name| name.to_lowercase()).collect())
+        .collect();
+    let mut names: Vec<&String> = months.iter().flatten().collect();
+    names.sort_by_key(|name| std::cmp::Reverse(name.chars().count()));
+    let month = format!(
+        r"(?:{})\b\.?",
+        names
+            .iter()
+            .map(|name| regex::escape(name))
+            .collect::<Vec<_>>()
+            .join("|")
+    );
+    let ordinal = match source.ordinal_suffixes.as_slice() {
+        [] => r"\.?".to_owned(),
+        suffixes => format!(r"(?:\.|{})?", suffixes.join("|")),
+    };
+    let pattern = format!(
+        r"(?i)\b(?:(?P<da>\d{{1,2}}){ordinal}\s+(?P<ma>{month}),?\s+(?P<ya>\d{{4}})|(?P<mb>{month})\s+(?P<db>\d{{1,2}}){ordinal},?\s+(?P<yb>\d{{4}})|(?P<dc>\d{{1,2}})-(?P<mc>{month})-(?P<yc>\d{{4}}|\d{{2}}))\b"
+    );
+
+    Ok(DateWords {
+        written: compile("dates", &pattern)?,
+        months,
+    })
 }
 
 /// Up to six capitalised words, joined by a connector, then a legal form,

@@ -16,6 +16,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::layout::{Line, Span};
+use crate::numbers::{self, NumberFormat};
 use crate::profile::{LineItemWords, Profile};
 
 /// One position of a quote or invoice.
@@ -48,11 +49,6 @@ macro_rules! regex {
 }
 
 regex!(POSITION, r"^(?:\d{1,3}(?:\.\d{1,3}){1,5}|\d{1,6})\.?$");
-regex!(
-    QUANTITY,
-    r"^(-?\d{1,3}(?:\.\d{3})+(?:,\d+)?|-?\d+(?:,\d+)?)\s*([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß²³./]{0,11})$"
-);
-regex!(AMOUNT, r"^(-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2})\s*(?:€|EUR)?$");
 
 /// How far, in PDF points, a position number may sit from the column of the
 /// first one.
@@ -64,8 +60,11 @@ const FOOTER_LINES: usize = 4;
 
 /// The positions of the document; empty when it has fewer than two, which
 /// leaves letters and receipts without a misread table.
-pub fn extract(lines: &[Line], profile: &Profile) -> Vec<LineItem> {
-    let words = &profile.line_items;
+pub fn extract(lines: &[Line], profile: &Profile, numbers: &NumberFormat) -> Vec<LineItem> {
+    let reading = Reading {
+        words: &profile.line_items,
+        numbers,
+    };
     let repeated = repeated_lines(lines);
     let lines: Vec<&Line> = lines
         .iter()
@@ -87,13 +86,14 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Vec<LineItem> {
                 column.get_or_insert(item.column);
                 items.push(item.item);
             }
-            open = Some(Open::start(line, heading.section.clone(), heading.optional, words));
+            open = Some(Open::start(line, heading.section.clone(), heading.optional, reading));
             heading.used = true;
             continue;
         }
 
         let text = line.text();
-        let is_total = words.total_line.is_match(text.trim()) && line.spans.iter().any(|span| is_amount(&span.text));
+        let is_total = reading.words.total_line.is_match(text.trim())
+            && line.spans.iter().any(|span| numbers.whole_amount(&span.text).is_some());
 
         if let Some(current) = open.as_mut() {
             if !is_total && current.continues_with(line) {
@@ -107,7 +107,7 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Vec<LineItem> {
         }
 
         if !is_total {
-            heading.read(&text, words);
+            heading.read(&text, reading.words);
         }
     }
 
@@ -120,6 +120,14 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Vec<LineItem> {
     }
 
     items
+}
+
+/// What positions are read by: the profile's words and the document's number
+/// format.
+#[derive(Clone, Copy)]
+struct Reading<'a> {
+    words: &'a LineItemWords,
+    numbers: &'a NumberFormat,
 }
 
 /// The title or group that the following positions belong to, read from the
@@ -181,7 +189,7 @@ struct Open<'a> {
     lines: Vec<Line>,
     section: Option<String>,
     optional: bool,
-    words: &'a LineItemWords,
+    reading: Reading<'a>,
 }
 
 struct Finished {
@@ -190,12 +198,12 @@ struct Finished {
 }
 
 impl<'a> Open<'a> {
-    fn start(line: &Line, section: Option<String>, optional: bool, words: &'a LineItemWords) -> Self {
+    fn start(line: &Line, section: Option<String>, optional: bool, reading: Reading<'a>) -> Self {
         Self {
             lines: vec![line.clone()],
             section,
             optional,
-            words,
+            reading,
         }
     }
 
@@ -205,7 +213,7 @@ impl<'a> Open<'a> {
         self.lines
             .iter()
             .flat_map(|line| line.spans.iter().skip(usize::from(line == &self.lines[0])))
-            .find(|span| span_kind(span, self.words) == SpanKind::Text)
+            .find(|span| span_kind(span, self.reading) == SpanKind::Text)
             .map(|span| span.x)
     }
 
@@ -219,7 +227,7 @@ impl<'a> Open<'a> {
         match self.description_x() {
             Some(x) if (x - number_x).abs() <= COLUMN_TOLERANCE => {
                 let text = line.text();
-                !text.trim_end().ends_with(':') || self.words.note.is_match(&text)
+                !text.trim_end().ends_with(':') || self.reading.words.note.is_match(&text)
             }
             Some(x) => first.x >= x - COLUMN_TOLERANCE,
             // The text starts on the next line, possibly in the number's column.
@@ -241,7 +249,7 @@ impl<'a> Open<'a> {
             let mut after_quantity = false;
 
             for span in line.spans.iter().skip(usize::from(index == 0)) {
-                match span_kind(span, self.words) {
+                match span_kind(span, self.reading) {
                     SpanKind::Quantity(value, symbol) if quantity.is_none() => {
                         quantity = Some(value);
                         unit = Some(symbol);
@@ -269,7 +277,13 @@ impl<'a> Open<'a> {
         // unless the position is marked optional, which prices only its unit.
         let (unit_price, total) = match figures.as_slice() {
             [price, total, ..] => (Some(price.clone()), Some(total.clone())),
-            [only] if optional && self.lines.iter().any(|line| has_marker_after_amount(line, self.words)) => {
+            [only]
+                if optional
+                    && self
+                        .lines
+                        .iter()
+                        .any(|line| has_marker_after_amount(line, self.reading)) =>
+            {
                 (Some(only.clone()), None)
             }
             [only] => (None, Some(only.clone())),
@@ -301,19 +315,19 @@ enum SpanKind {
     Text,
 }
 
-fn span_kind(span: &Span, words: &LineItemWords) -> SpanKind {
+fn span_kind(span: &Span, reading: Reading<'_>) -> SpanKind {
     let text = span.text.trim();
 
-    if words.lump_sum.is_match(text) {
+    if reading.words.lump_sum.is_match(text) {
         return SpanKind::Quantity("1".to_owned(), text.to_owned());
     }
-    if let Some(captures) = AMOUNT.captures(text) {
-        return SpanKind::Amount(money(&captures[1]));
+    if let Some(cents) = reading.numbers.whole_amount(text) {
+        return SpanKind::Amount(numbers::decimal(cents));
     }
-    if let Some(captures) = QUANTITY.captures(text) {
-        return SpanKind::Quantity(number(&captures[1]), captures[2].to_owned());
+    if let Some((quantity, unit)) = reading.numbers.quantity(text) {
+        return SpanKind::Quantity(quantity, unit);
     }
-    if words.optional_marker.is_match(text) {
+    if reading.words.optional_marker.is_match(text) {
         return SpanKind::Marker;
     }
 
@@ -329,38 +343,11 @@ fn is_position(span: &Span) -> bool {
     POSITION.is_match(span.text.trim())
 }
 
-fn is_amount(text: &str) -> bool {
-    AMOUNT.is_match(text.trim())
-}
-
-fn has_marker_after_amount(line: &Line, words: &LineItemWords) -> bool {
+fn has_marker_after_amount(line: &Line, reading: Reading<'_>) -> bool {
     line.spans
         .iter()
-        .skip_while(|span| !is_amount(&span.text))
-        .any(|span| words.optional_marker.is_match(span.text.trim()))
-}
-
-/// `1.234,56` as `1234.56`.
-fn money(amount: &str) -> String {
-    let cents: i64 = amount.replace(['.', ','], "").parse().unwrap_or_default();
-
-    format!(
-        "{}{}.{:02}",
-        if cents < 0 { "-" } else { "" },
-        cents.abs() / 100,
-        cents.abs() % 100
-    )
-}
-
-/// `1.234,500` as `1234.5`.
-fn number(quantity: &str) -> String {
-    let decimal = quantity.replace('.', "").replace(',', ".");
-
-    if decimal.contains('.') {
-        decimal.trim_end_matches('0').trim_end_matches('.').to_owned()
-    } else {
-        decimal
-    }
+        .skip_while(|span| reading.numbers.whole_amount(&span.text).is_none())
+        .any(|span| reading.words.optional_marker.is_match(span.text.trim()))
 }
 
 /// Joins wrapped lines; a word hyphenated at a line end is joined again.
@@ -437,7 +424,7 @@ mod tests {
     use crate::profile::tests::german;
 
     fn extract(lines: &[Line]) -> Vec<LineItem> {
-        super::extract(lines, german())
+        super::extract(lines, german(), &NumberFormat::new(german().decimal_mark))
     }
 
     /// Position, quantity, unit, unit price, total and whether it is optional.
@@ -592,6 +579,32 @@ mod tests {
             "Leerrohre einlegen. Hinweis: Nur mit Paket Haustechnik."
         );
         assert_eq!(items[0].section.as_deref(), Some("Rohbau Untergeschoss"));
+    }
+
+    #[test]
+    fn reads_positions_written_with_a_decimal_point() {
+        let lines = lines(&[
+            item(1, 40.0, 700.0, "1"),
+            item(1, 105.0, 700.0, "Industrial grade bolts"),
+            item(1, 330.0, 700.0, "4 pcs"),
+            item(1, 410.0, 700.0, "48.50"),
+            item(1, 500.0, 700.0, "$194.00"),
+            item(1, 40.0, 680.0, "2"),
+            item(1, 105.0, 680.0, "Hydraulic hose"),
+            item(1, 330.0, 680.0, "1,250.5 m"),
+            item(1, 410.0, 680.0, "1.20"),
+            item(1, 500.0, 680.0, "$1,500.60"),
+        ]);
+
+        let items = super::extract(&lines, german(), &NumberFormat::new(crate::numbers::DecimalMark::Point));
+
+        assert_eq!(
+            items.iter().map(position).collect::<Vec<_>>(),
+            [
+                ("1", Some("4"), Some("pcs"), Some("48.50"), Some("194.00"), false),
+                ("2", Some("1250.5"), Some("m"), Some("1.20"), Some("1500.60"), false),
+            ]
+        );
     }
 
     #[test]

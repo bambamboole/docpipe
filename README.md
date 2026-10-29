@@ -42,7 +42,7 @@ The answer is JSON:
     "issue_date": { "value": "2026-09-07", "page": 1, "line": "…" },
     "due_date": { "value": "2026-09-17", "page": 2, "line": "…" },
     "valid_until": null,
-    "amounts": { "net": "3250.00", "tax": "617.50", "gross": "3867.50", "tax_rate": 19, "consistent": true },
+    "amounts": { "net": "3250.00", "tax": "617.50", "gross": "3867.50", "currency": "EUR", "tax_rate": 19, "consistent": true },
     "ibans": ["DE89370400440532013000"],
     "vat_ids": ["DE123456789"],
     "seller_name": { "value": "Musterbau GmbH & Co. KG", "page": 1, "line": "Musterbau GmbH & Co. KG · Hauptstr. 1 · 12345 Musterstadt" },
@@ -67,7 +67,9 @@ Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, 
 
 ### How fields are read
 
-Lines are rebuilt from pdf-inspector's positioned text runs, keeping each run's horizontal position. A value is looked up after its label in the same run, then to the right on the same line, then in the label's column on the next three lines; when several labels share one run, as in a table header, the label's column is estimated from its position in the run. Amounts prefer a consistent triple — net and VAT at 19 % or 7 % that add up to a gross amount on the document — which also covers layouts whose labels and values sit in separate cells. Without such a triple, only labelled amounts are returned. IBANs are checked with their ISO 13616 check digits.
+Lines are rebuilt from pdf-inspector's positioned text runs, keeping each run's horizontal position. A value is looked up after its label in the same run, then to the right on the same line, then in the label's column on the next three lines; when several labels share one run, as in a table header, the label's column is estimated from its position in the run. Amounts prefer a consistent triple — net and VAT at 19 % or 7 % that add up to a gross amount on the document — which also covers layouts whose labels and values sit in separate cells. Without such a triple, only labelled amounts are returned. IBANs are checked with their ISO 13616 check digits; VAT identification numbers are read in the formats of the EU countries, the United Kingdom, Switzerland and Norway.
+
+Numbers and dates are read in the format the document uses. Whether amounts carry a decimal comma (`1.234,56`, `1 234,56`) or a decimal point (`1,234.56`, `1'234.56`) is decided by the amounts with two decimals on the document; only when they do not tell, the language profile's mark decides. ISO dates, dotted dates (day first) and dates with a written month are unambiguous. A date with slashes takes its order from a date on the same document whose day exceeds 12; otherwise an issue and a due date take the order that puts the due date after the issue date, and when both orders do, or a date stands alone, it stays empty. The currency is the one ISO 4217 code or unambiguous symbol (`€`, `£`, `US$`) written next to the document's numbers; a bare `$`, or two currencies on one document, leave it empty.
 
 Line items start at a line whose first span is a position number alone (`1.2`, `01.11.01.01`, `10073`) in the column of the first one. The quantity is a span of a number and a unit, or a lump-sum word (`pauschal`, `psch`), on the position's first or last line; the amounts to its right are the unit price and the total, a single one the total. Following lines in the text's column belong to the position; header and footer lines repeated on several pages, carried-over subtotals and title sums are skipped. Text between positions names their section, and a section such as `Eventualpositionen` or `Optionale Positionen (nicht im Basispreis enthalten)`, or a marker such as `Bedarf`, makes its positions optional. A document with fewer than two positions has none.
 
@@ -77,7 +79,7 @@ OCR pages have no positions in the response; their lines are rebuilt from the OC
 
 ### Language profiles
 
-The words fields are read by live in language profiles, one TOML file per language in [`profiles/`](profiles), compiled into the binary: the labels of each field, the words that tell invoices, quotes and credit notes apart, the vocabulary of line items and the legal forms of companies. Everything else — the layout, amounts, dates, IBANs, e-invoices — does not depend on the language. German (`de`) is the only profile so far, and every document is read with it.
+The words fields are read by live in language profiles, one TOML file per language in [`profiles/`](profiles), compiled into the binary: the labels of each field, the words that tell invoices, quotes and credit notes apart, the vocabulary of line items, the legal forms of companies, the names of the months and the decimal mark to assume when a document does not show one. Everything else — the layout, number and date formats, currencies, IBANs, VAT numbers, e-invoices — does not depend on the language. German (`de`) is the only profile so far, and every document is read with it.
 
 To add a language, copy `profiles/de.toml`, translate its patterns and word lists, add the file to `SOURCES` in `src/profile.rs`, and add tests that build documents in that language and name the layouts they cover. A profile that fails to parse or has an invalid pattern fails `cargo test`.
 
