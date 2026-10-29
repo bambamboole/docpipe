@@ -283,7 +283,7 @@ pub(crate) mod tests {
     static OTHER_KEY: LazyLock<RsaPrivateKey> = LazyLock::new(generate_key);
 
     fn generate_key() -> RsaPrivateKey {
-        RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap()
+        RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048).unwrap()
     }
 
     fn jwks() -> String {
