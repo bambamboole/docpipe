@@ -6,6 +6,7 @@ pub mod analyze;
 pub mod attachments;
 pub mod auth;
 pub mod candidates;
+pub mod config;
 pub mod currency;
 pub mod dates;
 pub mod http;

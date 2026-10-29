@@ -4,3 +4,8 @@
 !tests/fixtures/**/*.pdf
 .idea/
 /benchmark-data/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/coverage/
+/fuzz/Cargo.lock

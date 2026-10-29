@@ -64,6 +64,11 @@ pub struct Line {
 }
 
 impl Line {
+    /// A line of `spans` on `page` at baseline `y` with font size `size`.
+    pub fn new(page: u32, y: f32, size: f32, spans: Vec<Span>) -> Self {
+        Self { page, y, size, spans }
+    }
+
     /// The spans joined with single spaces.
     pub fn text(&self) -> String {
         self.spans

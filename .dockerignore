@@ -1,4 +1,5 @@
 target
+fuzz
 .git
 *.pdf
 !tests/fixtures/**/*.pdf

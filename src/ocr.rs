@@ -1,11 +1,17 @@
 //! OCR for the pages of a PDF without a usable text layer.
 //!
 //! pdf-inspector routes only those pages to PP-OCRv6 Small, rendered with
-//! PDFium and run on ONNX Runtime; text-based PDFs never load either library.
+//! `PDFium` and run on ONNX Runtime; text-based PDFs never load either library.
 //! See `docs/ocr-benchmark.md` for why this engine and not Tesseract.
+//!
+//! ONNX Runtime keeps about 1.1 GiB of memory pools per concurrent run, so
+//! the service runs one OCR at a time. That is not enforced here: [`recognize`]
+//! runs whenever it is called, and the HTTP layer holds its single OCR slot,
+//! an async semaphore that a request's timeout can stop waiting for, while it
+//! does. [`crate::analyze::analyze`] calls it directly for callers without a
+//! runtime, such as the tests and the fuzz targets.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use pdf_inspector::vision::{
     ModelDownloadPolicy, OcrMode, OcrOptions, OcrPdfOptions, PageContentSource, RenderOptions, process_pdf_with_ocr_mem,
@@ -15,14 +21,34 @@ use utoipa::ToSchema;
 
 use crate::layout::{Line, Span};
 
-/// Serializes OCR runs; native extraction stays parallel.
-static OCR_LOCK: Mutex<()> = Mutex::new(());
-
 /// Rendering resolution of routed pages; the benchmark ran at 200 dpi.
 const RENDER_DPI: f32 = 200.0;
 
+/// Horizontal distance between the cells of an OCR table row, in the nominal
+/// points of [`lines`]; wider than [`CELL_WIDTH`], so cells never touch.
+const CELL_PITCH: f32 = 120.0;
+
+/// Nominal width of a cell span; a label still finds its value to the right.
+const CELL_WIDTH: f32 = 100.0;
+
+/// Baseline of the first Markdown line of a page. Lines go down from here,
+/// which keeps them in reading order for any page length.
+const TOP_BASELINE: f32 = 10_000.0;
+
+/// Vertical distance between consecutive Markdown lines.
+const LINE_PITCH: f32 = 12.0;
+
+/// Nominal font size of an OCR line; OCR reports no sizes.
+const LINE_SIZE: f32 = 10.0;
+
+/// What the client is told when OCR fails. The library's error may name
+/// files and goes to the log instead.
+const FAILURE_MESSAGE: &str = "OCR failed";
+
+/// Whether and how OCR runs.
 #[derive(Debug, Clone, Default)]
 pub struct OcrSettings {
+    /// Whether pages without a usable text layer are read by OCR at all.
     pub enabled: bool,
     /// A pre-populated PP-OCRv6 Small model directory. With it, models are
     /// never downloaded; without it, they are fetched into the cache once.
@@ -37,6 +63,7 @@ pub enum OcrStatus {
     NotNeeded,
     /// Pages needed OCR, but OCR is switched off.
     Disabled,
+    /// The pages without a text layer were read by OCR.
     Applied,
     /// The OCR runtime failed; the native result is returned as is.
     Failed,
@@ -50,6 +77,7 @@ pub struct OcrPage {
     /// The page's text, reconstructed from OCR Markdown.
     #[serde(skip)]
     pub text: String,
+    /// The page as Markdown, tables included.
     pub markdown: String,
     /// The recognizer's mean confidence. It stays high even on poor scans and
     /// is no quality gate.
@@ -61,15 +89,21 @@ pub struct OcrPage {
 /// What OCR did for the pages without a usable text layer.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct OcrReport {
+    /// Whether OCR ran.
     pub status: OcrStatus,
+    /// The pages OCR read; empty unless `status` is `applied`.
     pub pages: Vec<OcrPage>,
-    /// Why OCR failed; the native result is returned instead.
+    /// Why OCR failed, in one short sentence; the native result is returned
+    /// instead.
     pub error: Option<String>,
+    /// Time spent rendering the pages.
     pub render_ms: u64,
+    /// Time spent recognizing the rendered pages.
     pub ocr_ms: u64,
 }
 
 impl OcrReport {
+    /// A report of OCR that did not run, with `status` telling why.
     pub fn without(status: OcrStatus) -> Self {
         Self {
             status,
@@ -81,15 +115,24 @@ impl OcrReport {
     }
 }
 
-/// Runs OCR on the pages pdf-inspector selects; `needs_ocr` is the native
-/// extraction's verdict and only decides whether to start at all.
-pub fn recognize(bytes: &[u8], needs_ocr: &[u32], settings: &OcrSettings) -> OcrReport {
+/// Why OCR will not run for a document, or `None` when it will: `needs_ocr`
+/// is the native extraction's verdict and `settings` says whether OCR is on.
+pub fn skipped(needs_ocr: &[u32], settings: &OcrSettings) -> Option<OcrStatus> {
     if needs_ocr.is_empty() {
-        return OcrReport::without(OcrStatus::NotNeeded);
+        Some(OcrStatus::NotNeeded)
+    } else if !settings.enabled {
+        Some(OcrStatus::Disabled)
+    } else {
+        None
     }
+}
 
-    if !settings.enabled {
-        return OcrReport::without(OcrStatus::Disabled);
+/// Runs OCR on the pages pdf-inspector selects; `needs_ocr` is the native
+/// extraction's verdict and only decides whether to start at all (see
+/// [`skipped`]). The caller serialises concurrent runs; see the module docs.
+pub fn recognize(bytes: &[u8], needs_ocr: &[u32], settings: &OcrSettings) -> OcrReport {
+    if let Some(status) = skipped(needs_ocr, settings) {
+        return OcrReport::without(status);
     }
 
     let mut ocr = OcrOptions::new().mode(OcrMode::Auto);
@@ -102,10 +145,6 @@ pub fn recognize(bytes: &[u8], needs_ocr: &[u32], settings: &OcrSettings) -> Ocr
     let options = OcrPdfOptions::auto()
         .ocr(ocr)
         .render(RenderOptions::new().dpi(RENDER_DPI));
-
-    // ONNX Runtime keeps about 1.1 GiB of memory pools per concurrent run;
-    // one OCR at a time keeps the container within its memory limit.
-    let _guard = OCR_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     match process_pdf_with_ocr_mem(bytes, options) {
         Ok(result) => OcrReport {
@@ -129,7 +168,7 @@ pub fn recognize(bytes: &[u8], needs_ocr: &[u32], settings: &OcrSettings) -> Ocr
         Err(error) => {
             tracing::warn!(%error, "OCR failed");
             OcrReport {
-                error: Some(error.to_string()),
+                error: Some(FAILURE_MESSAGE.to_owned()),
                 ..OcrReport::without(OcrStatus::Failed)
             }
         }
@@ -165,18 +204,18 @@ pub fn lines(page: &OcrPage) -> Vec<Line> {
             .enumerate()
             .map(|(column, cell)| Span {
                 text: strip_markdown(cell).to_owned(),
-                x: column as f32 * 120.0,
-                width: 100.0,
+                x: column as f32 * CELL_PITCH,
+                width: CELL_WIDTH,
             })
             .collect();
 
         if !spans.is_empty() {
-            lines.push(Line {
-                page: page.number,
-                y: 10_000.0 - index as f32 * 12.0,
-                size: 10.0,
+            lines.push(Line::new(
+                page.number,
+                TOP_BASELINE - index as f32 * LINE_PITCH,
+                LINE_SIZE,
                 spans,
-            });
+            ));
         }
     }
 
@@ -241,13 +280,16 @@ mod tests {
 
     #[test]
     fn does_not_start_without_pages_to_recognize_or_when_disabled() {
-        assert_eq!(
-            recognize(b"%PDF", &[], &OcrSettings::default()).status,
-            OcrStatus::NotNeeded
-        );
-        assert_eq!(
-            recognize(b"%PDF", &[1], &OcrSettings::default()).status,
-            OcrStatus::Disabled
-        );
+        let off = OcrSettings::default();
+        let on = OcrSettings {
+            enabled: true,
+            model_directory: None,
+        };
+
+        assert_eq!(skipped(&[], &off), Some(OcrStatus::NotNeeded));
+        assert_eq!(skipped(&[1], &off), Some(OcrStatus::Disabled));
+        assert_eq!(skipped(&[1], &on), None);
+        assert_eq!(recognize(b"%PDF", &[], &off).status, OcrStatus::NotNeeded);
+        assert_eq!(recognize(b"%PDF", &[1], &off).status, OcrStatus::Disabled);
     }
 }

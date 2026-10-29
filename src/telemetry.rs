@@ -18,10 +18,14 @@ use tracing_subscriber::{EnvFilter, fmt};
 /// every allocation; neither is ours to act on.
 const DEFAULT_FILTER: &str = "info,lopdf=error,ort=warn";
 
+/// Where and what to report to Sentry.
 #[derive(Debug)]
 pub struct SentrySettings {
+    /// The project's DSN.
     pub dsn: sentry::types::Dsn,
+    /// The release the reports belong to.
     pub release: String,
+    /// The environment the reports belong to.
     pub environment: Option<String>,
     /// The lowest level forwarded as structured logs; `OFF` sends none.
     pub logs: LevelFilter,
@@ -34,7 +38,9 @@ impl SentrySettings {
         Self::from_vars(|name| std::env::var(name).ok())
     }
 
-    fn from_vars(lookup: impl Fn(&str) -> Option<String>) -> Result<Option<Self>, String> {
+    /// [`Self::from_env`] reading from `lookup`; [`crate::config`] passes the
+    /// environment through it so the whole configuration is testable.
+    pub fn from_vars(lookup: impl Fn(&str) -> Option<String>) -> Result<Option<Self>, String> {
         let var = |name: &str| {
             lookup(name)
                 .map(|value| value.trim().to_owned())

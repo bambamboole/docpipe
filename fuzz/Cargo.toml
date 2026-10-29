@@ -1,0 +1,25 @@
+[package]
+name = "docpipe-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+docpipe = { path = ".." }
+
+[[bin]]
+name = "analyze"
+path = "fuzz_targets/analyze.rs"
+test = false
+doc = false
+bench = false
+
+# Standalone: the fuzz crate is not a member of the root package.
+[workspace]
+
+[profile.release]
+debug = 1

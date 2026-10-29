@@ -1,23 +1,22 @@
+//! Smoke tests over the Sinabis corpora in `tests/fixtures/sinabis-ocr` and
+//! `tests/fixtures/sinabis-einvoices`: scan routing, and that e-invoices
+//! return their embedded XML unchanged. `sinabis_candidates.rs` compares the
+//! field candidates with that XML.
+
+#![allow(clippy::unwrap_used)]
+
+mod common;
+
 use std::fs;
-use std::path::Path;
 
 use docpipe::analyze::{Format, TextSource, analyze};
 use docpipe::attachments::EInvoiceSyntax;
 use docpipe::ocr::{OcrSettings, OcrStatus};
-use serde_json::Value;
-
-fn rows(directory: &Path) -> Vec<Value> {
-    fs::read_to_string(directory.join("selection.jsonl"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
-}
 
 #[test]
 fn routes_sinabis_vector_and_scanned_invoices() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sinabis-ocr");
-    let records = rows(&directory);
+    let directory = common::fixtures("sinabis-ocr");
+    let records = common::rows(&directory);
     assert_eq!(records.len(), 100);
     assert_eq!(records.iter().filter(|record| record["scanned"] == true).count(), 50);
 
@@ -41,8 +40,8 @@ fn routes_sinabis_vector_and_scanned_invoices() {
 
 #[test]
 fn reads_sinabis_einvoices_and_returns_their_xml_unchanged() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sinabis-einvoices");
-    let records = rows(&directory);
+    let directory = common::fixtures("sinabis-einvoices");
+    let records = common::rows(&directory);
     assert_eq!(records.len(), 100);
 
     for record in records {
@@ -73,8 +72,8 @@ fn reads_all_sinabis_scans_with_ocr() {
         enabled: true,
         model_directory: Some(model_directory),
     };
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sinabis-ocr");
-    let records = rows(&directory);
+    let directory = common::fixtures("sinabis-ocr");
+    let records = common::rows(&directory);
 
     for record in records.into_iter().filter(|record| record["scanned"] == true) {
         let path = directory.join(record["file"].as_str().unwrap());

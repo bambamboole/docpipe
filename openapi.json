@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "docpipe",
-    "description": "Analyses invoices and quotes in German and English: PDF classification, the text of every page, OCR of scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to confirm. The service is stateless and keeps nothing it receives.",
+    "description": "Analyses German invoices and quotes: PDF classification, the text of every page, OCR of scanned pages, embedded ZUGFeRD/Factur-X and XRechnung XML, and field candidates for a person to confirm. The service is stateless and keeps nothing it receives.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -76,7 +76,7 @@
             }
           },
           "400": {
-            "description": "The body is empty (`empty_body`).",
+            "description": "The body is empty (`empty_body`) or could not be read (`unreadable_body`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -96,7 +96,14 @@
             }
           },
           "413": {
-            "description": "The body exceeds `DOCPIPE_MAX_BODY_MB`."
+            "description": "The body exceeds `DOCPIPE_MAX_BODY_MB` (`payload_too_large`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "415": {
             "description": "The body is neither a PDF nor a CII/UBL e-invoice XML (`unsupported_format`).",
@@ -129,7 +136,7 @@
             }
           },
           "503": {
-            "description": "The issuer's keys cannot be fetched (`auth_unavailable`), or no analysis slot freed up or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS` (`timeout`).",
+            "description": "The issuer's keys cannot be fetched (`auth_unavailable`), more than `DOCPIPE_MAX_CONCURRENT` plus `DOCPIPE_MAX_QUEUED` requests are in flight (`overloaded`), or no analysis slot freed up or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS` (`timeout`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -221,7 +228,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AttachmentInfo"
-            }
+            },
+            "description": "The files embedded in the PDF."
           },
           "candidates": {
             "oneOf": [
@@ -246,7 +254,8 @@
             ]
           },
           "format": {
-            "$ref": "#/components/schemas/Format"
+            "$ref": "#/components/schemas/Format",
+            "description": "What was sent."
           },
           "ocr": {
             "oneOf": [
@@ -269,7 +278,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Page"
-            }
+            },
+            "description": "Every page, in order."
           },
           "pages_needing_ocr": {
             "type": "array",
@@ -294,10 +304,12 @@
           "processing_ms": {
             "type": "integer",
             "format": "int64",
+            "description": "How long the analysis took, waiting for OCR included.",
             "minimum": 0
           },
           "text_source": {
-            "$ref": "#/components/schemas/TextSource"
+            "$ref": "#/components/schemas/TextSource",
+            "description": "Where the text of `pages` comes from."
           }
         }
       },
@@ -311,13 +323,15 @@
         ],
         "properties": {
           "filename": {
-            "type": "string"
+            "type": "string",
+            "description": "The name the PDF gives the file."
           },
           "mime_type": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The MIME type the PDF declares, when it does."
           },
           "size": {
             "type": "integer",
@@ -506,9 +520,12 @@
           "unauthorized",
           "auth_unavailable",
           "empty_body",
+          "unreadable_body",
+          "payload_too_large",
           "unsupported_format",
           "unreadable_pdf",
           "timeout",
+          "overloaded",
           "internal_error"
         ]
       },
@@ -650,7 +667,8 @@
             "description": "The recognizer's mean confidence. It stays high even on poor scans and\nis no quality gate."
           },
           "markdown": {
-            "type": "string"
+            "type": "string",
+            "description": "The page as Markdown, tables included."
           },
           "number": {
             "type": "integer",
@@ -680,26 +698,30 @@
               "string",
               "null"
             ],
-            "description": "Why OCR failed; the native result is returned instead."
+            "description": "Why OCR failed, in one short sentence; the native result is returned\ninstead."
           },
           "ocr_ms": {
             "type": "integer",
             "format": "int64",
+            "description": "Time spent recognizing the rendered pages.",
             "minimum": 0
           },
           "pages": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OcrPage"
-            }
+            },
+            "description": "The pages OCR read; empty unless `status` is `applied`."
           },
           "render_ms": {
             "type": "integer",
             "format": "int64",
+            "description": "Time spent rendering the pages.",
             "minimum": 0
           },
           "status": {
-            "$ref": "#/components/schemas/OcrStatus"
+            "$ref": "#/components/schemas/OcrStatus",
+            "description": "Whether OCR ran."
           }
         }
       },

@@ -74,7 +74,7 @@ The answer is JSON:
 }
 ```
 
-Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, `503 auth_unavailable` (the issuer's JWKS cannot be fetched), `400 empty_body`, `415 unsupported_format` (neither PDF nor CII/UBL XML), `422 unreadable_pdf`, `503 timeout` (no analysis slot freed up, or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS`). `GET /health` answers `ok` without a token. A body larger than `DOCPIPE_MAX_BODY_MB` answers `413` without JSON.
+Errors answer with `{"error": "<code>", "message": "…"}`: `401 unauthorized`, `503 auth_unavailable` (the issuer's JWKS cannot be fetched), `503 overloaded` (more than `DOCPIPE_MAX_CONCURRENT` plus `DOCPIPE_MAX_QUEUED` requests are in flight; retry later), `400 empty_body`, `400 unreadable_body` (the body could not be read to its end), `413 payload_too_large` (larger than `DOCPIPE_MAX_BODY_MB`), `415 unsupported_format` (neither PDF nor CII/UBL XML), `422 unreadable_pdf`, `503 timeout` (no analysis slot freed up, or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS`). The token is checked and the request admitted before its body is read, so an unauthenticated or shed request costs no memory. Every response carries an `x-request-id` header, the client's when it sent one, which the log lines of the request also carry. `GET /health` answers `ok` without a token.
 
 ### How fields are read
 
@@ -104,9 +104,11 @@ As in [pdf-ua-api](https://github.com/bambamboole/pdf-ua-api), docpipe only veri
 
 `/health` is always public.
 
-The JWKS is fetched on the first request and again when a token names an unknown key, at most once a minute.
+The JWKS is fetched at startup — when the issuer is unreachable, a warning is logged and the service starts anyway — and again when a token names an unknown key, at most once a minute.
 
 ## Configuration
+
+Every variable is read at startup, and a value that cannot be used — a port that is not a number, `DOCPIPE_MAX_CONCURRENT=0`, a model directory without its models — stops the service from starting instead of being replaced by a default.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -118,10 +120,11 @@ The JWKS is fetched on the first request and again when a token names an unknown
 | `API_KEY` | – | Required with `api_key`: the static bearer token |
 | `DOCPIPE_MAX_BODY_MB` | `50` | Largest accepted document |
 | `DOCPIPE_MAX_CONCURRENT` | CPU count | Analyses that run at once; further requests wait for a slot |
+| `DOCPIPE_MAX_QUEUED` | 2 × `DOCPIPE_MAX_CONCURRENT` | Requests admitted beyond the running ones to wait for a slot; further requests are shed with `503 overloaded` before their body is read |
 | `DOCPIPE_TIMEOUT_SECS` | `300` | How long a request may wait for a slot and its analysis |
-| `DOCPIPE_OCR` | on | `off` disables OCR; pages that need it are reported with `ocr.status: "disabled"` |
-| `DOCPIPE_OCR_MODEL_DIR` | – | Complete PP-OCRv6 Small model directory; without it, models are downloaded into the cache on first use. Set in the Docker image. |
-| `PDFIUM_LIB_PATH`, `ORT_DYLIB_PATH` | – | PDFium and ONNX Runtime shared libraries for OCR. Set in the Docker image. |
+| `DOCPIPE_OCR` | `on` | `off` disables OCR; pages that need it are reported with `ocr.status: "disabled"` |
+| `DOCPIPE_OCR_MODEL_DIR` | – | Complete PP-OCRv6 Small model directory, checked at startup for the three model files; without it, models are downloaded into the cache on first use. Set in the Docker image. |
+| `PDFIUM_LIB_PATH`, `ORT_DYLIB_PATH` | – | PDFium and ONNX Runtime shared libraries for OCR, checked at startup to exist. Set in the Docker image. |
 | `RUST_LOG` | `info,lopdf=error,ort=warn` | Log filter; logs are JSON on stdout |
 | `SENTRY_DSN` | – | Report to a Sentry-compatible server such as [Rustrak](https://github.com/rustrak/rustrak); unset, nothing is sent |
 | `SENTRY_RELEASE` | `docpipe@<version>` | Release of the reports |
@@ -165,7 +168,7 @@ Releases come from [release-please](https://github.com/googleapis/release-please
 
 The image ships PDFium `native-v7988`, ONNX Runtime 1.27.0 and the PP-OCRv6 Small models (`oar-ocr-v0.7.0`), each verified by SHA-256 at build time; it never downloads anything at runtime. CI runs the OCR corpus on native amd64 and arm64 Docker runners.
 
-After OCR, ONNX Runtime keeps its memory pools: in production the container peaked at 1.12 GiB and stayed at 1.1 GiB (1.2 MiB idle before the first OCR). OCR runs one document at a time, so `compose-production.yml` limits the container to 1.5 GiB.
+After OCR, ONNX Runtime keeps its memory pools: in production the container peaked at 1.12 GiB and stayed at 1.1 GiB (1.2 MiB idle before the first OCR). OCR runs one document at a time, so `compose-production.yml` limits the container to 1.5 GiB. A document whose pages need OCR first goes through native extraction in one of the `DOCPIPE_MAX_CONCURRENT` slots, then waits for the single OCR slot without holding that slot, so a burst of scans does not stall text PDFs; the wait ends with the request's `DOCPIPE_TIMEOUT_SECS`.
 
 ## Roadmap
 
