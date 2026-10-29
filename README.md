@@ -14,7 +14,7 @@ The service is stateless and keeps nothing it receives.
 
 ## API
 
-[`openapi.json`](openapi.json) describes the API as OpenAPI 3.1, and every instance serves it at `GET /openapi.json` without a token. `cargo run -- openapi > openapi.json` regenerates it from the code; a test fails when the committed document is stale.
+[`openapi.json`](openapi.json) describes the API as OpenAPI 3.1, and every instance serves it at `GET /openapi.json` without a token. `GET /docs` renders it with the [Lattice API reference](https://www.npmjs.com/package/@lattice-php/api-reference), whose playground sends requests to the instance itself; the page loads the reference from jsDelivr, pinned by version and hash. `cargo run -- openapi > openapi.json` regenerates it from the code; a test fails when the committed document is stale.
 
 ```http
 POST /v1/analyze
