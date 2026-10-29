@@ -80,3 +80,6 @@ trailing_legal_forms = ['KG', 'AG', 'SE', 'OHG']
 connectors = ['&', '\+', 'und']
 # Words that introduce a company in running text rather than name it.
 leading_words = ['Firma', 'Fa\.', 'Die', 'Der', 'Den', 'Von', 'Bei']
+# Headings of the recipient's address; a name under one, or after it in the
+# same run, is the customer's. These match case-insensitively.
+recipient_headings = ['Rechnungsempfänger', 'Rechnungsanschrift', 'Lieferanschrift', 'Lieferadresse', 'Leistungsempfänger']

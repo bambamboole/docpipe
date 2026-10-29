@@ -1,0 +1,86 @@
+# English invoices and quotes.
+#
+# Patterns are regular expressions in the syntax of Rust's regex crate and
+# match case-insensitively, except in [seller]. Word lists match as plain,
+# lowercase substrings. See README.md, "Language profiles".
+
+id = "en"
+name = "English"
+
+[numbers]
+# The decimal mark, `,` or `.`, when a document's amounts do not show it.
+decimal_mark = "."
+
+[dates]
+# The months, January first, each with its abbreviations.
+months = [
+  ["January", "Jan"],
+  ["February", "Feb"],
+  ["March", "Mar"],
+  ["April", "Apr"],
+  ["May"],
+  ["June", "Jun"],
+  ["July", "Jul"],
+  ["August", "Aug"],
+  ["September", "Sep", "Sept"],
+  ["October", "Oct"],
+  ["November", "Nov"],
+  ["December", "Dec"],
+]
+# Suffixes after the day of a written date: `7th September 2026`.
+ordinal_suffixes = ["st", "nd", "rd", "th"]
+
+# A label is followed by its value: in the same run, to its right, or below it.
+# A bare `Total` is no label: it also heads the amount column of line items.
+[labels]
+invoice_number = '\b(?:(?:tax\s+)?invoice|inv|bill|credit\s+note|credit\s+memo|document)\s*(?:no|nr|number|num|#)\.?\s*:?'
+quote_number = '\b(?:quot(?:e|ation)|estimate|proposal|offer)\s*(?:no|nr|number|ref|#)\.?\s*:?'
+issue_date = '(?:^|\b(?:invoice|issue|document|quote|quotation|credit(?:\s+note)?|tax\s+point)\s+)date\b\s*:?|\bdate\s+of\s+issue\s*:?|\bdated\s*:?'
+due_date = '\b(?:due\s+date|date\s+due|payment\s+due(?:\s+date)?|due\s+(?:on|by)|payable\s+(?:by|on|before))\s*:?'
+valid_until = '\b(?:valid\s+(?:until|till|to|through)|expiry\s+date|expires(?:\s+on)?)\s*:?'
+gross = '\b(?:total\s+due|amount\s+due|balance\s+due|grand\s+total|invoice\s+total|total\s+amount|total\s+payable|amount\s+payable|total\s+credit|total\s+incl(?:uding|\.)?\s+(?:vat|tax))\b'
+net = '\b(?:total\s+excl(?:usive|uding|\.)?(?:\s+(?:of\s+)?(?:vat|tax))?|net\s+total|total\s+net|net\s+amount|sub-?\s*total)(?:\b|\s|$)'
+
+# Words that score a document kind; the first page counts double, a credit note
+# word three times.
+[document_kind]
+invoice = ["invoice", "invoice no", "invoice date", "due date", "amount due", "bill to", "payment terms"]
+quote = ["quote", "quotation", "estimate", "proposal", "valid until"]
+credit_note = ["credit note", "credit memo"]
+
+# Words on the first page of an invoice; final wins over partial.
+[invoice_kind]
+final = ["final invoice"]
+partial = ["progress invoice", "interim invoice", "partial invoice", "progress billing", "deposit invoice"]
+
+[line_items]
+# A title heading, replaced only by the next title: `Section: 2. Earthing`.
+title_prefix = "Section:"
+# A span that stands for the quantity 1 of a lump-sum position.
+lump_sum = '^(?:lump\s+sum|l\.?s\.?|flat\s+rate)$'
+# A span that marks a position as optional, alternative or contingency.
+optional_marker = '^(?:optional|alternative|alt\.|provisional|contingency)$'
+# A heading whose positions are optional.
+optional_section = 'optional|alternative|provisional\s+sum|contingenc|not\s+included\s+in\s+(?:the\s+)?total'
+# A line ending with a colon that still belongs to the position above.
+note = '^(?:note|notes|please\s+note|important|attention)\b'
+# A line with an amount that sums positions instead of being one.
+total_line = '^(?:carried\s+forward|brought\s+forward|sub-?\s*total|total|discount|less|net|gross)|\bvat\b|sales\s+tax|\btax\b'
+
+# The seller is a company named with a legal form. These patterns are
+# case-sensitive.
+[seller]
+legal_forms = ['\(Pty\)\s+Ltd\.?', 'Pty\.?\s+Ltd\.?', 'Ltd\.?', 'Limited', 'LLC', 'L\.L\.C\.', 'LLP', 'PLC', 'plc', 'Corporation', 'Incorporated']
+# Partnerships with a company as general partner; none in English.
+partnership_forms = []
+# Forms that also abbreviate other words and so count only at the end of the
+# name's part of the line.
+trailing_legal_forms = ['Inc\.?', 'Corp\.?', 'Co\.?', 'LP', 'CC']
+# Words that join the parts of a name: `Hayes & Mitchell`.
+connectors = ['&', '\+', 'and']
+# Words that introduce a company in running text, or a title before it,
+# rather than name it.
+leading_words = ['TAX', 'Tax', 'INVOICE', 'Invoice', 'CREDIT', 'Credit', 'NOTE', 'Note', 'From', 'FROM', 'By']
+# Headings of the recipient's address; a name under one, or after it in the
+# same run, is the customer's. These match case-insensitively.
+recipient_headings = ['Bill\s+To', 'Billed\s+To', 'Invoice\s+To', 'Ship\s+To', 'Deliver\s+To', 'Delivery\s+Address', 'Sold\s+To', 'Credit\s+To', 'Customer']

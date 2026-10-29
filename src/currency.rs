@@ -61,7 +61,19 @@ pub fn affix_pattern() -> String {
 /// The one currency the document names next to its numbers, if it names
 /// exactly one.
 pub fn detect(lines: &[Line]) -> Option<String> {
-    let named: BTreeSet<&'static str> = lines
+    match named(lines).into_iter().collect::<Vec<_>>().as_slice() {
+        [only] => Some((*only).to_owned()),
+        _ => None,
+    }
+}
+
+/// Whether the document names more than one currency next to its numbers.
+pub fn several(lines: &[Line]) -> bool {
+    named(lines).len() > 1
+}
+
+fn named(lines: &[Line]) -> BTreeSet<&'static str> {
+    lines
         .iter()
         .flat_map(|line| {
             let text = line.text();
@@ -74,12 +86,7 @@ pub fn detect(lines: &[Line]) -> Option<String> {
                 })
                 .collect::<Vec<_>>()
         })
-        .collect();
-
-    match named.into_iter().collect::<Vec<_>>().as_slice() {
-        [only] => Some((*only).to_owned()),
-        _ => None,
-    }
+        .collect()
 }
 
 fn currency(token: &str) -> Option<&'static str> {

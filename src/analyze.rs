@@ -221,7 +221,7 @@ fn analyze_pdf(bytes: &[u8], ocr_settings: &OcrSettings) -> Result<Analysis, Ana
             })
             .collect(),
         einvoice,
-        candidates: has_text.then(|| candidates::extract(&lines, profile::fallback())),
+        candidates: has_text.then(|| candidates::extract(&lines, profile::detect(&lines))),
         ocr: Some(report),
         processing_ms: 0,
     })

@@ -11,10 +11,14 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
 
+use crate::layout::Line;
 use crate::numbers::DecimalMark;
 
 /// The bundled profiles, in the order they are tried.
-const SOURCES: &[(&str, &str)] = &[("profiles/de.toml", include_str!("../profiles/de.toml"))];
+const SOURCES: &[(&str, &str)] = &[
+    ("profiles/de.toml", include_str!("../profiles/de.toml")),
+    ("profiles/en.toml", include_str!("../profiles/en.toml")),
+];
 
 static PROFILES: LazyLock<Vec<Profile>> = LazyLock::new(|| {
     SOURCES
@@ -31,10 +35,15 @@ pub fn get(id: &str) -> Option<&'static Profile> {
     all().iter().find(|profile| profile.id == id)
 }
 
-/// The profile every document is read with until profiles are detected per
-/// document.
-pub fn fallback() -> &'static Profile {
-    get("de").expect("the German profile is bundled")
+/// The profile whose labels and document words occur most often on the
+/// document; on a tie, the one bundled first.
+pub fn detect(lines: &[Line]) -> &'static Profile {
+    all()
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, profile)| (profile.score(lines), std::cmp::Reverse(*index)))
+        .map(|(_, profile)| profile)
+        .expect("a profile is bundled")
 }
 
 #[derive(Debug)]
@@ -116,6 +125,8 @@ pub struct SellerWords {
     pub company: Regex,
     /// The words before a name that introduce it in running text.
     pub leading_words: Regex,
+    /// A run that starts with the heading of the recipient's address.
+    pub recipient: Regex,
 }
 
 /// A profile as written in its TOML file.
@@ -177,9 +188,45 @@ struct SellerSource {
     trailing_legal_forms: Vec<String>,
     connectors: Vec<String>,
     leading_words: Vec<String>,
+    recipient_headings: Vec<String>,
 }
 
 impl Profile {
+    /// How many labels and document-kind words of the profile occur on the
+    /// document.
+    fn score(&self, lines: &[Line]) -> usize {
+        let labels = &self.labels;
+        let patterns = [
+            &labels.invoice_number,
+            &labels.quote_number,
+            &labels.issue_date,
+            &labels.due_date,
+            &labels.valid_until,
+            &labels.gross,
+            &labels.net,
+        ];
+        let words = &self.document_kind;
+
+        lines
+            .iter()
+            .map(|line| {
+                let text = line.text().to_lowercase();
+                let labelled = line
+                    .spans
+                    .iter()
+                    .map(|span| patterns.iter().filter(|label| label.is_match(&span.text)).count())
+                    .sum::<usize>();
+                let kind = [&words.invoice, &words.quote, &words.credit_note]
+                    .into_iter()
+                    .flatten()
+                    .filter(|word| text.contains(word.as_str()))
+                    .count();
+
+                labelled + kind
+            })
+            .sum()
+    }
+
     fn parse(source: &str) -> Result<Self, String> {
         let source: Source = toml::from_str(source).map_err(|error| error.to_string())?;
         let labels = source.labels;
@@ -217,6 +264,10 @@ impl Profile {
                 leading_words: compile(
                     "seller.leading_words",
                     &format!(r"^(?:(?:{})\s+)+", source.seller.leading_words.join("|")),
+                )?,
+                recipient: insensitive(
+                    "seller.recipient_headings",
+                    &format!(r"^\s*(?:{})\b", source.seller.recipient_headings.join("|")),
                 )?,
             },
         })
@@ -313,8 +364,33 @@ fn lowercase(words: Vec<String>) -> Vec<String> {
 pub(crate) mod tests {
     use super::*;
 
+    use crate::layout::lines;
+    use crate::layout::tests::item;
+
     pub(crate) fn german() -> &'static Profile {
-        fallback()
+        get("de").expect("the German profile is bundled")
+    }
+
+    pub(crate) fn english() -> &'static Profile {
+        get("en").expect("the English profile is bundled")
+    }
+
+    #[test]
+    fn detects_the_language_of_a_document() {
+        let german_invoice = lines(&[
+            item(1, 50.0, 700.0, "Rechnung"),
+            item(1, 50.0, 680.0, "Rechnungsdatum: 07.09.2026"),
+            item(1, 50.0, 660.0, "Gesamtbetrag: 119,00 €"),
+        ]);
+        let english_invoice = lines(&[
+            item(1, 50.0, 700.0, "TAX INVOICE"),
+            item(1, 50.0, 680.0, "Invoice #: IN0049923"),
+            item(1, 50.0, 660.0, "Due Date: 26/09/2025"),
+        ]);
+
+        assert_eq!(detect(&german_invoice).id, "de");
+        assert_eq!(detect(&english_invoice).id, "en");
+        assert_eq!(detect(&[]).id, "de");
     }
 
     #[test]
