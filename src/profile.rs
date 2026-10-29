@@ -27,16 +27,16 @@ static PROFILES: LazyLock<Vec<Profile>> = LazyLock::new(|| {
         .collect()
 });
 
+/// The bundled profiles, parsed on first use; a profile that does not parse
+/// panics here, which `cargo test` catches.
+#[must_use]
 pub fn all() -> &'static [Profile] {
     &PROFILES
 }
 
-pub fn get(id: &str) -> Option<&'static Profile> {
-    all().iter().find(|profile| profile.id == id)
-}
-
 /// The profile whose labels and document words occur most often on the
 /// document; on a tie, the one bundled first.
+#[must_use]
 pub fn detect(lines: &[Line]) -> &'static Profile {
     all()
         .iter()
@@ -46,21 +46,28 @@ pub fn detect(lines: &[Line]) -> &'static Profile {
         .expect("a profile is bundled")
 }
 
+/// The words of one language, compiled from its TOML file.
 #[derive(Debug)]
 pub struct Profile {
     /// A BCP 47 language tag, such as `de`.
     pub id: String,
-    pub name: String,
     /// The decimal mark when a document's amounts do not show it.
     pub decimal_mark: DecimalMark,
+    /// The names of the months and the pattern of a written date.
     pub dates: DateWords,
+    /// The labels of the fields.
     pub labels: Labels,
+    /// The words that tell invoices, quotes and credit notes apart.
     pub document_kind: DocumentKindWords,
+    /// The words that tell partial and final invoices apart.
     pub invoice_kind: InvoiceKindWords,
+    /// The vocabulary of line items.
     pub line_items: LineItemWords,
+    /// The legal forms of companies and the headings of the recipient.
     pub seller: SellerWords,
 }
 
+/// The words dates are written with.
 #[derive(Debug)]
 pub struct DateWords {
     /// A date with a written month: day, month and year in the groups `da`,
@@ -83,42 +90,68 @@ impl DateWords {
     }
 }
 
+/// The labels a field's value is looked up after, matched case-insensitively
+/// within one run of text.
 #[derive(Debug)]
 pub struct Labels {
+    /// The label of an invoice's number.
     pub invoice_number: Regex,
+    /// The label of a quote's number.
     pub quote_number: Regex,
+    /// The label of the issue date.
     pub issue_date: Regex,
+    /// The label of the due date.
     pub due_date: Regex,
+    /// The label of the end of a quote's validity.
     pub valid_until: Regex,
+    /// The label of the gross amount.
     pub gross: Regex,
+    /// The label of the net amount.
     pub net: Regex,
 }
 
+/// The lowercase words that name a kind of document, matched as substrings.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DocumentKindWords {
+    /// Words of an invoice.
     pub invoice: Vec<String>,
+    /// Words of a quote.
     pub quote: Vec<String>,
+    /// Words of a credit note.
     pub credit_note: Vec<String>,
 }
 
+/// The lowercase words that name a kind of invoice, matched as substrings on
+/// the first page.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InvoiceKindWords {
+    /// Words of a final invoice.
     pub r#final: Vec<String>,
+    /// Words of a partial invoice.
     pub partial: Vec<String>,
 }
 
+/// The vocabulary of line items.
 #[derive(Debug)]
 pub struct LineItemWords {
+    /// What a title heading starts with, such as `Titel:`.
     pub title_prefix: String,
+    /// A span that stands for a quantity of one, such as `pauschal`.
     pub lump_sum: Regex,
+    /// A span on a position that marks it optional, such as `Bedarf`.
     pub optional_marker: Regex,
+    /// A section heading whose positions are optional.
     pub optional_section: Regex,
+    /// A line ending with a colon that still belongs to a position, such as
+    /// `Hinweis:`.
     pub note: Regex,
+    /// A line that sums positions, such as `Titelsumme`, and ends them.
     pub total_line: Regex,
 }
 
+/// The words the seller is read by.
 #[derive(Debug)]
 pub struct SellerWords {
     /// A company name ending in a legal form.
@@ -134,6 +167,9 @@ pub struct SellerWords {
 #[serde(deny_unknown_fields)]
 struct Source {
     id: String,
+    /// The language's name, for the people who edit the file; the code
+    /// knows a profile by its `id`.
+    #[expect(dead_code, reason = "documents the file; nothing reads it")]
     name: String,
     numbers: NumberSource,
     dates: DateSource,
@@ -212,7 +248,7 @@ impl Profile {
             .map(|line| {
                 let text = line.text().to_lowercase();
                 let labelled = line
-                    .spans
+                    .spans()
                     .iter()
                     .map(|span| patterns.iter().filter(|label| label.is_match(&span.text)).count())
                     .sum::<usize>();
@@ -227,6 +263,9 @@ impl Profile {
             .sum()
     }
 
+    /// The profile of a TOML source. The error is a message with the key at
+    /// fault: it is only ever shown, in the panic at startup and in `cargo
+    /// test`, so an error type would be more code than value.
     fn parse(source: &str) -> Result<Self, String> {
         let source: Source = toml::from_str(source).map_err(|error| error.to_string())?;
         let labels = source.labels;
@@ -234,9 +273,8 @@ impl Profile {
 
         Ok(Self {
             id: source.id,
-            name: source.name,
             decimal_mark: source.numbers.decimal_mark,
-            dates: date_words(source.dates)?,
+            dates: date_words(&source.dates)?,
             labels: Labels {
                 invoice_number: insensitive("labels.invoice_number", &labels.invoice_number)?,
                 quote_number: insensitive("labels.quote_number", &labels.quote_number)?,
@@ -274,7 +312,7 @@ impl Profile {
     }
 }
 
-fn date_words(source: DateSource) -> Result<DateWords, String> {
+fn date_words(source: &DateSource) -> Result<DateWords, String> {
     if source.months.len() != 12 || source.months.iter().any(Vec::is_empty) {
         return Err("dates.months: name twelve months, each at least once".to_owned());
     }
@@ -361,19 +399,10 @@ fn lowercase(words: Vec<String>) -> Vec<String> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-
     use crate::layout::lines;
-    use crate::layout::tests::item;
-
-    pub(crate) fn german() -> &'static Profile {
-        get("de").expect("the German profile is bundled")
-    }
-
-    pub(crate) fn english() -> &'static Profile {
-        get("en").expect("the English profile is bundled")
-    }
+    use crate::test_support::item;
 
     #[test]
     fn detects_the_language_of_a_document() {

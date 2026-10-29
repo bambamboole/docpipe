@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # pdf-inspector pins lopdf 0.45; a newer version here would put two lopdf
+      # crates into the binary. Bump both together.
+      - dependency-name: lopdf
     groups:
       cargo:
         update-types: [minor, patch]

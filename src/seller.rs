@@ -28,6 +28,8 @@ const RECIPIENT_LINES: usize = 3;
 /// How far, in PDF points, a name may sit from the column of its heading.
 const RECIPIENT_COLUMN: f32 = 20.0;
 
+/// The company named with a legal form most often on the document, with the
+/// line it was first read from.
 pub fn extract(lines: &[Line], profile: &Profile) -> Option<Field> {
     let words = &profile.seller;
     let mut candidates: Vec<Candidate> = Vec::new();
@@ -37,7 +39,7 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Option<Field> {
         .iter()
         .enumerate()
         .flat_map(|(index, line)| {
-            line.spans
+            line.spans()
                 .iter()
                 .filter(|span| words.recipient.is_match(&span.text))
                 .map(move |span| (line.page, index, span.x))
@@ -63,7 +65,7 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Option<Field> {
 
         // Per span: a legal form that counts only at the end of a name ends
         // the span when a title sits to its right on the same line.
-        let spans = line.spans.iter().filter(|span| !is_recipient(index, line, span));
+        let spans = line.spans().iter().filter(|span| !is_recipient(index, line, span));
 
         for matched in spans.flat_map(|span| words.company.find_iter(&span.text)) {
             let name = words
@@ -87,7 +89,7 @@ pub fn extract(lines: &[Line], profile: &Profile) -> Option<Field> {
                     field: Field {
                         value: name.clone(),
                         page: line.page,
-                        line: text.clone(),
+                        line: text.to_owned(),
                     },
                     score: 0,
                 });
@@ -125,8 +127,7 @@ fn key(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::layout::lines;
-    use crate::layout::tests::item;
-    use crate::profile::tests::{english, german};
+    use crate::test_support::{english, german, item};
 
     fn extract(lines: &[Line]) -> Option<Field> {
         super::extract(lines, german())

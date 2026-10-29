@@ -76,7 +76,7 @@
             }
           },
           "400": {
-            "description": "The body is empty (`empty_body`).",
+            "description": "The body is empty (`empty_body`) or could not be read (`unreadable_body`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -96,7 +96,14 @@
             }
           },
           "413": {
-            "description": "The body exceeds `DOCPIPE_MAX_BODY_MB`."
+            "description": "The body exceeds `DOCPIPE_MAX_BODY_MB` (`payload_too_large`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "415": {
             "description": "The body is neither a PDF nor a CII/UBL e-invoice XML (`unsupported_format`).",
@@ -129,7 +136,7 @@
             }
           },
           "503": {
-            "description": "The issuer's keys cannot be fetched (`auth_unavailable`), or no analysis slot freed up or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS` (`timeout`).",
+            "description": "The issuer's keys cannot be fetched (`auth_unavailable`), more than `DOCPIPE_MAX_CONCURRENT` plus `DOCPIPE_MAX_QUEUED` requests are in flight (`overloaded`), or no analysis slot freed up or the analysis did not finish within `DOCPIPE_TIMEOUT_SECS` (`timeout`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -176,20 +183,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The gross amount, written like `net`."
           },
           "net": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Decimal strings with a dot and two fraction digits, e.g. `3250.00`."
+            "description": "The net amount as a decimal string with a dot and two fraction\ndigits, e.g. `3250.00`."
           },
           "tax": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The tax amount, written like `net`."
           },
           "tax_lines": {
             "type": "array",
@@ -221,7 +230,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AttachmentInfo"
-            }
+            },
+            "description": "The files embedded in the PDF."
           },
           "candidates": {
             "oneOf": [
@@ -246,7 +256,8 @@
             ]
           },
           "format": {
-            "$ref": "#/components/schemas/Format"
+            "$ref": "#/components/schemas/Format",
+            "description": "What was sent."
           },
           "ocr": {
             "oneOf": [
@@ -269,7 +280,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Page"
-            }
+            },
+            "description": "Every page, in order."
           },
           "pages_needing_ocr": {
             "type": "array",
@@ -294,10 +306,12 @@
           "processing_ms": {
             "type": "integer",
             "format": "int64",
+            "description": "How long the analysis took, waiting for OCR included.",
             "minimum": 0
           },
           "text_source": {
-            "$ref": "#/components/schemas/TextSource"
+            "$ref": "#/components/schemas/TextSource",
+            "description": "Where the text of `pages` comes from."
           }
         }
       },
@@ -311,13 +325,15 @@
         ],
         "properties": {
           "filename": {
-            "type": "string"
+            "type": "string",
+            "description": "The name the PDF gives the file."
           },
           "mime_type": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The MIME type the PDF declares, when it does."
           },
           "size": {
             "type": "integer",
@@ -345,15 +361,18 @@
         ],
         "properties": {
           "amounts": {
-            "$ref": "#/components/schemas/Amounts"
+            "$ref": "#/components/schemas/Amounts",
+            "description": "The document's totals."
           },
           "document_kind": {
-            "$ref": "#/components/schemas/DocumentKind"
+            "$ref": "#/components/schemas/DocumentKind",
+            "description": "Whether the document is an invoice, a quote, a credit note or none."
           },
           "due_date": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/Field"
+                "$ref": "#/components/schemas/Field",
+                "description": "The date an invoice is payable by."
               },
               {
                 "type": "null"
@@ -381,7 +400,8 @@
           "issue_date": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/Field"
+                "$ref": "#/components/schemas/Field",
+                "description": "The date the document was issued."
               },
               {
                 "type": "null"
@@ -392,7 +412,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/LineItem"
-            }
+            },
+            "description": "The positions of the document; empty when it has fewer than two."
           },
           "number": {
             "oneOf": [
@@ -467,10 +488,12 @@
             "description": "The attachment's file name, or `null` for a standalone XML document."
           },
           "syntax": {
-            "$ref": "#/components/schemas/EInvoiceSyntax"
+            "$ref": "#/components/schemas/EInvoiceSyntax",
+            "description": "Which of the two e-invoice syntaxes the document uses."
           },
           "xml": {
-            "type": "string"
+            "type": "string",
+            "description": "The XML as embedded or sent, unparsed."
           }
         }
       },
@@ -506,9 +529,12 @@
           "unauthorized",
           "auth_unavailable",
           "empty_body",
+          "unreadable_body",
+          "payload_too_large",
           "unsupported_format",
           "unreadable_pdf",
           "timeout",
+          "overloaded",
           "internal_error"
         ]
       },
@@ -613,7 +639,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The position's total, written like `unit_price`."
           },
           "unit": {
             "type": [
@@ -627,7 +654,7 @@
               "string",
               "null"
             ],
-            "description": "Decimal strings with a dot and two fraction digits."
+            "description": "The price of one unit, as a decimal string with a dot and two\nfraction digits."
           }
         }
       },
@@ -650,7 +677,8 @@
             "description": "The recognizer's mean confidence. It stays high even on poor scans and\nis no quality gate."
           },
           "markdown": {
-            "type": "string"
+            "type": "string",
+            "description": "The page as Markdown, tables included."
           },
           "number": {
             "type": "integer",
@@ -680,26 +708,30 @@
               "string",
               "null"
             ],
-            "description": "Why OCR failed; the native result is returned instead."
+            "description": "Why OCR failed, in one short sentence; the native result is returned\ninstead."
           },
           "ocr_ms": {
             "type": "integer",
             "format": "int64",
+            "description": "Time spent recognizing the rendered pages.",
             "minimum": 0
           },
           "pages": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OcrPage"
-            }
+            },
+            "description": "The pages OCR read; empty unless `status` is `applied`."
           },
           "render_ms": {
             "type": "integer",
             "format": "int64",
+            "description": "Time spent rendering the pages.",
             "minimum": 0
           },
           "status": {
-            "$ref": "#/components/schemas/OcrStatus"
+            "$ref": "#/components/schemas/OcrStatus",
+            "description": "Whether OCR ran."
           }
         }
       },
@@ -769,14 +801,15 @@
         "properties": {
           "net": {
             "type": "string",
-            "description": "Decimal strings with a dot and two fraction digits."
+            "description": "The net amount taxed at the rate, as a decimal string with a dot and\ntwo fraction digits."
           },
           "rate": {
             "type": "string",
             "description": "The rate in percent as printed, e.g. `19`, `7.5` or `8.1`."
           },
           "tax": {
-            "type": "string"
+            "type": "string",
+            "description": "The tax on `net`, written like it."
           }
         }
       },

@@ -1,7 +1,7 @@
 //! Embedded files of a PDF, and the e-invoice XML among them.
 //!
-//! ZUGFeRD/Factur-X and XRechnung hybrids carry their structured invoice as
-//! an attached XML file. docpipe only finds and returns it; the receiving
+//! `ZUGFeRD`/Factur-X and `XRechnung` hybrids carry their structured invoice
+//! as an attached XML file. docpipe only finds and returns it; the receiving
 //! application parses it with a dedicated e-invoice library.
 
 use lopdf::{Dictionary, Document, Object};
@@ -11,10 +11,14 @@ use utoipa::ToSchema;
 /// Embedded files larger than this are skipped rather than decompressed.
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Attachment {
+/// A file embedded in a PDF, with its content decompressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Attachment {
+    /// The name the PDF gives the file.
     pub filename: String,
+    /// The MIME type the PDF declares, when it does.
     pub mime_type: Option<String>,
+    /// The file's bytes.
     pub content: Vec<u8>,
 }
 
@@ -22,24 +26,26 @@ pub struct Attachment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EInvoiceSyntax {
-    /// UN/CEFACT Cross Industry Invoice: ZUGFeRD, Factur-X, XRechnung CII.
+    /// UN/CEFACT Cross Industry Invoice: `ZUGFeRD`, Factur-X, `XRechnung` CII.
     Cii,
-    /// OASIS UBL 2.1: XRechnung UBL, Peppol.
+    /// OASIS UBL 2.1: `XRechnung` UBL, Peppol.
     Ubl,
 }
 
 /// An e-invoice XML document, returned as is.
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct EInvoice {
+    /// Which of the two e-invoice syntaxes the document uses.
     pub syntax: EInvoiceSyntax,
     /// The attachment's file name, or `null` for a standalone XML document.
     pub filename: Option<String>,
+    /// The XML as embedded or sent, unparsed.
     pub xml: String,
 }
 
 /// The files embedded in a PDF, through the `EmbeddedFiles` name tree and the
 /// catalog's associated files (`AF`). Unreadable entries are skipped.
-pub fn embedded_files(document: &Document) -> Vec<Attachment> {
+pub(crate) fn embedded_files(document: &Document) -> Vec<Attachment> {
     let Ok(catalog) = document.catalog() else {
         return Vec::new();
     };
@@ -77,8 +83,9 @@ pub fn embedded_files(document: &Document) -> Vec<Attachment> {
 }
 
 /// The e-invoice among the attachments: a CII or UBL document, preferring the
-/// file names the ZUGFeRD, Factur-X and XRechnung specifications prescribe.
-pub fn find_einvoice(attachments: &[Attachment]) -> Option<EInvoice> {
+/// file names the `ZUGFeRD`, Factur-X and `XRechnung` specifications
+/// prescribe.
+pub(crate) fn find_einvoice(attachments: &[Attachment]) -> Option<EInvoice> {
     let mut candidates: Vec<(&Attachment, EInvoiceSyntax, String)> = attachments
         .iter()
         .filter_map(|attachment| {
@@ -97,7 +104,7 @@ pub fn find_einvoice(attachments: &[Attachment]) -> Option<EInvoice> {
 }
 
 /// The syntax of an XML e-invoice, from its root element.
-pub fn einvoice_syntax(xml: &str) -> Option<EInvoiceSyntax> {
+pub(crate) fn einvoice_syntax(xml: &str) -> Option<EInvoiceSyntax> {
     let root = xml.trim_start_matches('\u{feff}').split('<').find(|tag| {
         let tag = tag.trim_start();
         !tag.is_empty() && !tag.starts_with('?') && !tag.starts_with('!')
@@ -172,7 +179,7 @@ fn read_file_spec(document: &Document, spec: &Dictionary) -> Option<Attachment> 
     })
 }
 
-/// A PDF text string: UTF-16BE with a byte order mark, else PDFDocEncoding,
+/// A PDF text string: UTF-16BE with a byte order mark, else `PDFDocEncoding`,
 /// read here as Latin-1.
 fn decode_text(object: &Object) -> Option<String> {
     let bytes = object.as_str().ok()?;
@@ -189,58 +196,12 @@ fn decode_text(object: &Object) -> Option<String> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use lopdf::{Stream, dictionary};
-
+mod tests {
     use super::*;
-
-    pub(crate) const CII: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<rsm:CrossIndustryInvoice xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"></rsm:CrossIndustryInvoice>"#;
+    use crate::test_support::{CII, pdf_with_attachments};
 
     const UBL: &str =
         r#"<?xml version="1.0"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"></Invoice>"#;
-
-    /// A one-page PDF with the given files attached through the name tree.
-    pub(crate) fn pdf_with_attachments(files: &[(&str, &str)]) -> Vec<u8> {
-        let mut document = Document::with_version("1.7");
-        let pages_id = document.new_object_id();
-        let page_id = document.add_object(dictionary! {
-            "Type" => "Page",
-            "Parent" => pages_id,
-            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
-        });
-        document.objects.insert(
-            pages_id,
-            Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1 }),
-        );
-
-        let mut names: Vec<Object> = Vec::new();
-        for (name, content) in files {
-            let stream_id = document.add_object(Stream::new(
-                dictionary! { "Type" => "EmbeddedFile", "Subtype" => "text#2Fxml" },
-                content.as_bytes().to_vec(),
-            ));
-            let spec_id = document.add_object(dictionary! {
-                "Type" => "Filespec",
-                "F" => Object::string_literal(*name),
-                "UF" => Object::string_literal(*name),
-                "EF" => dictionary! { "F" => stream_id },
-            });
-            names.push(Object::string_literal(*name));
-            names.push(spec_id.into());
-        }
-
-        let catalog_id = document.add_object(dictionary! {
-            "Type" => "Catalog",
-            "Pages" => pages_id,
-            "Names" => dictionary! { "EmbeddedFiles" => dictionary! { "Names" => names } },
-        });
-        document.trailer.set("Root", catalog_id);
-
-        let mut bytes = Vec::new();
-        document.save_to(&mut bytes).expect("the test PDF is written");
-        bytes
-    }
 
     #[test]
     fn finds_the_factur_x_attachment() {

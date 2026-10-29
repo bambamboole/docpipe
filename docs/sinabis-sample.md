@@ -46,4 +46,31 @@ For extraction benchmarking, parse the standalone XML **outside** docpipe to cre
 
 `cargo test --test sinabis_corpus` runs offline against all 200 PDFs. It checks scan routing and that the E-invoices return their embedded XML unchanged. The ignored `reads_all_sinabis_scans_with_ocr` test runs full OCR on the 50 scanned PDFs in the `ocr-test` Docker build stage, using the same pinned OCR runtime and models as production. CI builds and tests that stage on native amd64 and arm64 runners. The ordinary Rust test job needs no OCR assets.
 
+## Golden test of the candidates
+
+`tests/sinabis_candidates.rs` does the comparison described above, offline and in the ordinary test job. For each of the 100 E-invoice PDFs it parses the standalone CII XML and compares docpipe's candidates from the PDF's text layer with it: the document kind (`TypeCode` 381 is a credit note), the number, the issue and due dates, gross, net and tax (`GrandTotalAmount`, `TaxBasisTotalAmount`, `TaxTotalAmount`, compared in cents), the seller's VAT ID among the document's VAT IDs, the seller name (case and spacing ignored) and the number of line items. It also checks that the XML agrees with the manifest's number, date and line count. Each field has a minimum accuracy over the documents whose XML has a value, the value measured on 2026-10-29 rounded down to 5 %; the fields that must not guess also have a maximum share of documents with a wrong value, the measured share plus 5 points. A regression fails the test, an improvement passes it and should raise the threshold.
+
+| Field | Measured | Minimum | Wrong at most (measured) |
+|---|---|---|---|
+| `document_kind` | 96 % | 95 % | |
+| `number` | 93 % | 90 % | 12 % (7 %) |
+| `issue_date` | 99 % | 95 % | 6 % (1 %) |
+| `due_date` | 86 % | 85 % | 5 % (0 %) |
+| `gross` | 94 % | 90 % | 7 % (2 %) |
+| `net` | 83 % | 80 % | |
+| `tax` | 81 % | 80 % | |
+| `seller_vat_id` | 80 % | 80 % | |
+| `seller_name` | 73 % | 70 % | |
+| `line_item_count` | 45 % | 45 % | |
+
+`cargo test --test sinabis_candidates -- --nocapture` prints the table (applicable documents, correct, missing, wrong, accuracy, share of wrong values) and, per field, every mismatch as `file: expected …, got …`, the candidate with the page and the line it was read from.
+
+The misses follow a few patterns, worth fixing next:
+
+- `due_date` (14 missing): the due date is only given as a payment term, `Zahlbar innerhalb von 14 Tagen`. Reading it needs the issue date plus term arithmetic.
+- `number` (7 wrong): credit notes return the referenced invoice's number instead of the `Gutschrift-Nr.`.
+- `seller_name` (25 wrong): when the seller has no legal form, the company named most often is a bank from the payment details or the buyer.
+- `line_item_count` (55 missing): the positions have no position-number column, so no line item starts.
+- `tax` (19 missing) and `net` (12 missing): documents with 0 % tax (reverse charge, intra-EU supply, Kleinunternehmer) print no rate, so no tax line adds up and the amounts stay empty.
+
 The full general PDF dataset is 65.9 GB in seven ZIPs (71.8 GB unpacked). The E-invoice dataset is 49.54 GB in seven ZIPs (68.48 GB unpacked). Only the 200 selected PDFs, their 100 small XML references and selection records belong in Git. The pinned source revisions, selection seeds and manifest hashes make them reproducible. Both datasets are CC BY 4.0. Attribution for the E-invoice dataset: Sinabis GmbH (2026), *Sinabis Green Energy – 1M GoBD-compliant German E-Invoices (XRechnung 3.0 / ZUGFeRD)*, https://huggingface.co/datasets/sinabis-group/sinabis-1m-synthetic-zugferd-xrechnung.

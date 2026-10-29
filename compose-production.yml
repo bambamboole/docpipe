@@ -15,9 +15,17 @@ services:
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       SENTRY_LOGS: ${SENTRY_LOGS:-off}
+      # Analyses waiting for a slot; default twice DOCPIPE_MAX_CONCURRENT.
+      DOCPIPE_MAX_QUEUED: ${DOCPIPE_MAX_QUEUED:-}
       RUST_LOG: info,lopdf=error,ort=warn
     # Measured on the server: about 1.1 GiB after an OCR run, which holds
     # ONNX Runtime's memory pools; OCR runs one at a time.
     mem_limit: 1536m
     expose:
       - "8080"
+    healthcheck:
+      test: ["CMD", "docpipe", "health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
