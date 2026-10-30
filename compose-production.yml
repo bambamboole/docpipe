@@ -1,10 +1,10 @@
 # A deployment without a public port: other services of the same Docker
 # network reach it as http://docpipe:8080 with an access token of an allowed
-# client.
+# client. The image is the one every release publishes; `docker compose pull`
+# moves `latest` to the newest release.
 services:
   docpipe:
-    build:
-      context: .
+    image: ghcr.io/bambamboole/docpipe:latest
     environment:
       AUTH_MODE: jwt
       JWT_ISSUER: ${JWT_ISSUER:?}
