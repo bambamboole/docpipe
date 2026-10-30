@@ -2,8 +2,7 @@ name: Release
 
 # The tag release-please creates when its release pull request is merged, such
 # as v0.2.0, builds the binaries, attaches them to the GitHub release
-# release-please created, pushes the image to ghcr.io/<owner>/docpipe and
-# restarts the Coolify service that runs its `latest` tag.
+# release-please created and pushes the image to ghcr.io/<owner>/docpipe.
 on:
   push:
     tags:
@@ -149,23 +148,3 @@ jobs:
             --tag "$image:latest" \
             "$image:$version-amd64" "$image:$version-arm64"
           docker buildx imagetools inspect "$image:$version"
-
-  # The production service runs `latest`; Coolify pulls it on a restart with
-  # `latest=true`. The variables and the token are set by the infrastructure
-  # repository; the job is skipped while they are missing.
-  deploy:
-    name: Restart the Coolify service
-    needs: image_manifest
-    if: vars.COOLIFY_SERVICE_UUID != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Pull the latest image and restart
-        env:
-          COOLIFY_URL: ${{ vars.COOLIFY_URL }}
-          SERVICE_UUID: ${{ vars.COOLIFY_SERVICE_UUID }}
-          TOKEN: ${{ secrets.COOLIFY_DEPLOY_TOKEN }}
-        run: |
-          curl --fail --silent --show-error --request POST \
-            --header "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_URL/api/v1/services/$SERVICE_UUID/restart?latest=true"
