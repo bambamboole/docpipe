@@ -188,11 +188,11 @@ docker run -p 8080:8080 -e AUTH_MODE=api_key -e API_KEY=change-me ghcr.io/bambam
 
 The image is built for linux/amd64 and linux/arm64 and contains everything OCR needs. It runs as an unprivileged user. Its `HEALTHCHECK` runs `docpipe health` every 30 s: the binary requests `/health` on `PORT` and exits 0 on `200`, so the image carries no curl. The [Dockerfile](Dockerfile) pins its base images by digest and keeps the cargo registry and the target directory in BuildKit cache mounts, so a rebuild compiles only what changed. The binaries (Linux x86_64 and arm64, macOS arm64) bring no OCR runtime: set `PDFIUM_LIB_PATH` and `ORT_DYLIB_PATH` to a PDFium and an ONNX Runtime library, or switch OCR off with `DOCPIPE_OCR=off`. The Dockerfile names the tested versions.
 
-Releases come from [release-please](https://github.com/googleapis/release-please): it keeps a release pull request open that bumps the version in `Cargo.toml` and writes `CHANGELOG.md` from the conventional commits on `main`. Merging it tags `v<version>` and creates the release, and the tag builds the binaries and the image. A `feat!` or `BREAKING CHANGE` raises the minor version while docpipe is below 1.0.
+Releases come from [release-please](https://github.com/googleapis/release-please): it keeps a release pull request open that bumps the version in `Cargo.toml` and writes `CHANGELOG.md` from the conventional commits on `main`. Merging it tags `v<version>` and creates the release, and the tag builds the binaries and the image. The last job of the Release workflow restarts the production Coolify service, which runs `latest`, through the Coolify API; it is skipped while the repository has no `COOLIFY_SERVICE_UUID` variable. A `feat!` or `BREAKING CHANGE` raises the minor version while docpipe is below 1.0.
 
 ## Deployment
 
-`compose-production.yml` runs the image without a public port, for services in the same Docker network, with JWT authentication, the `docpipe health` healthcheck and a memory limit of 1.5 GiB.
+`compose-production.yml` runs the published image (`latest`) without a public port, for services in the same Docker network, with JWT authentication, the `docpipe health` healthcheck and a memory limit of 1.5 GiB.
 
 The image ships PDFium `native-v7988`, ONNX Runtime 1.27.0 and the PP-OCRv6 Small models (`oar-ocr-v0.7.0`), each verified by SHA-256 at build time; it never downloads anything at runtime. CI runs the OCR corpus on native amd64 and arm64 Docker runners.
 
