@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
 # OCR runtime: PDFium, ONNX Runtime and the PP-OCRv6 Small models, pinned to
 # the versions pdf-inspector validates and verified by SHA-256.
 ############################################
-FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS ocr-runtime
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS ocr-runtime
 
 ARG TARGETARCH
 ARG PDFIUM_RELEASE=native-v7988
@@ -84,7 +84,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
 ############################################
 # Production
 ############################################
-FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 LABEL org.opencontainers.image.source="https://github.com/bambamboole/docpipe" \
       org.opencontainers.image.description="Document analysis service for invoices and quotes" \
